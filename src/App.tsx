@@ -174,13 +174,15 @@ function App() {
     };
   }, [selectedChatId]);
 
-  // Listen for real-time WebRTC typing alerts, read receipts, and calling signals
+  // Listen for real-time WebRTC typing alerts, read receipts, calling signals, reactions, and ephemeral timers
   useEffect(() => {
     let unlistenTyping: (() => void) | null = null;
     let unlistenRead: (() => void) | null = null;
     let unlistenOffer: (() => void) | null = null;
     let unlistenAnswer: (() => void) | null = null;
     let unlistenCandidate: (() => void) | null = null;
+    let unlistenReaction: (() => void) | null = null;
+    let unlistenEphemeral: (() => void) | null = null;
 
     const setupListeners = async () => {
       try {
@@ -269,6 +271,62 @@ function App() {
             }
           }
         );
+
+        unlistenReaction = await listen<{ chatId: string; messageId: string; emoji: string; senderName: string }>(
+          "webrtc-reaction",
+          (event) => {
+            const { chatId, messageId, emoji, senderName } = event.payload;
+            setChats((prevChats) =>
+              prevChats.map((chat) => {
+                if (chat.id === chatId) {
+                  return {
+                    ...chat,
+                    messages: chat.messages.map((msg) => {
+                      if (msg.id === messageId) {
+                        const currentReactions = msg.reactions || [];
+                        const existingReaction = currentReactions.find((r) => r.emoji === emoji);
+                        
+                        let nextReactions;
+                        if (existingReaction) {
+                          const hasReacted = existingReaction.senders.includes(senderName);
+                          const nextSenders = hasReacted
+                            ? existingReaction.senders.filter((s) => s !== senderName)
+                            : [...existingReaction.senders, senderName];
+                            
+                          if (nextSenders.length === 0) {
+                            nextReactions = currentReactions.filter((r) => r.emoji !== emoji);
+                          } else {
+                            nextReactions = currentReactions.map((r) =>
+                              r.emoji === emoji ? { ...r, count: nextSenders.length, senders: nextSenders } : r
+                            );
+                          }
+                        } else {
+                          nextReactions = [...currentReactions, { emoji, count: 1, senders: [senderName] }];
+                        }
+
+                        const updatedMsg = { ...msg, reactions: nextReactions };
+                        invoke("send_db_message", { chatId, message: updatedMsg }).catch(console.error);
+                        return updatedMsg;
+                      }
+                      return msg;
+                    })
+                  };
+                }
+                return chat;
+              })
+            );
+          }
+        );
+
+        unlistenEphemeral = await listen<{ chatId: string; timerSeconds: number }>(
+          "webrtc-ephemeral-timer",
+          (event) => {
+            const { chatId, timerSeconds } = event.payload;
+            setChats((prev) =>
+              prev.map((c) => (c.id === chatId ? { ...c, ephemeralTimer: timerSeconds } : c))
+            );
+          }
+        );
       } catch (err) {
         console.error("Failed to setup WebRTC sign sync listeners:", err);
       }
@@ -282,6 +340,8 @@ function App() {
       if (unlistenOffer) unlistenOffer();
       if (unlistenAnswer) unlistenAnswer();
       if (unlistenCandidate) unlistenCandidate();
+      if (unlistenReaction) unlistenReaction();
+      if (unlistenEphemeral) unlistenEphemeral();
     };
   }, [activeCall, myPeerId]);
 
@@ -310,6 +370,74 @@ function App() {
       payload: { chatId: selectedChatId, isTyping }
     }).catch(console.error);
   };
+
+  // Handle local emoji reaction triggers
+  const handleLocalReaction = (messageId: string, emoji: string) => {
+    if (!selectedChatId) return;
+    emit("p2p-relay-event", {
+      eventName: "webrtc-reaction",
+      payload: { chatId: selectedChatId, messageId, emoji, senderName: settings.profileName }
+    }).catch(console.error);
+  };
+
+  // Handle ephemeral disappearing message timer configuration
+  const handleSetEphemeralTimer = async (chatId: string, timerSeconds: number) => {
+    setChats((prev) =>
+      prev.map((c) => (c.id === chatId ? { ...c, ephemeralTimer: timerSeconds } : c))
+    );
+    try {
+      await invoke("set_ephemeral_timer", { chatId, timerSeconds });
+      emit("p2p-relay-event", {
+        eventName: "webrtc-ephemeral-timer",
+        payload: { chatId, timerSeconds }
+      }).catch(console.error);
+    } catch (err) {
+      console.error("Failed to update ephemeral timer:", err);
+    }
+  };
+
+  // Handle cryptographic safety number peer verification
+  const handleVerifyPeer = async (chatId: string, isVerified: boolean) => {
+    setChats((prev) =>
+      prev.map((c) => (c.id === chatId ? { ...c, isVerified } : c))
+    );
+    try {
+      await invoke("verify_peer", { chatId, isVerified });
+    } catch (err) {
+      console.error("Failed to verify peer:", err);
+    }
+  };
+
+  // Process disappearing messages count-down timers
+  useEffect(() => {
+    chats.forEach((chat) => {
+      const timer = chat.ephemeralTimer || 0;
+      if (timer > 0) {
+        chat.messages.forEach((msg) => {
+          if (msg.status === "read") {
+            const cacheKey = `disappear-timer-${msg.id}`;
+            if (!(window as any)[cacheKey]) {
+              (window as any)[cacheKey] = setTimeout(async () => {
+                setChats((prev) =>
+                  prev.map((c) => {
+                    if (c.id === chat.id) {
+                      return {
+                        ...c,
+                        messages: c.messages.filter((m) => m.id !== msg.id),
+                      };
+                    }
+                    return c;
+                  })
+                );
+                invoke("delete_db_message", { chatId: chat.id, messageId: msg.id }).catch(console.error);
+                delete (window as any)[cacheKey];
+              }, timer * 1000);
+            }
+          }
+        });
+      }
+    });
+  }, [chats]);
 
   const handleUpdateSettings = async (newSettings: Partial<AppSettings>) => {
     const nextSettings = { ...settings, ...newSettings };
@@ -468,7 +596,8 @@ function App() {
   // Send Message Logic
   const handleSendMessage = async (
     text: string,
-    attachment?: { type: "image" | "file"; name: string; base64?: string }
+    attachment?: { type: "image" | "file" | "audio"; name: string; base64?: string; duration?: string },
+    replyTo?: { id: string; senderName: string; text: string }
   ) => {
     if (!selectedChatId) return;
 
@@ -497,10 +626,12 @@ function App() {
         ? {
             type: attachment.type,
             name: attachment.name,
-            size: attachment.type === "image" ? "450 KB" : "1.8 MB",
+            size: attachment.type === "image" ? "450 KB" : (attachment.type === "audio" ? "120 KB" : "1.8 MB"),
             url: savedPath || (attachment.type === "image" ? "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=60" : undefined),
+            duration: attachment.duration,
           }
         : undefined,
+      replyTo,
     };
 
     // Add user message
@@ -1076,6 +1207,9 @@ function App() {
                 onSendMessage={handleSendMessage}
                 onBackToList={() => setMobileView("list")}
                 onTyping={handleLocalTyping}
+                onAddReaction={handleLocalReaction}
+                onSetEphemeralTimer={handleSetEphemeralTimer}
+                onVerifyPeer={handleVerifyPeer}
               />
             </div>
           )}

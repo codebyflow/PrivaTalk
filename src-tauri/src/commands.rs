@@ -70,7 +70,7 @@ pub fn save_settings(settings: AppSettings, state: State<'_, DbState>) -> Result
 pub fn get_chats(state: State<'_, DbState>) -> Result<Vec<Chat>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked FROM chats")
+        .prepare("SELECT id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked, is_verified, ephemeral_timer FROM chats")
         .map_err(|e| e.to_string())?;
         
     let chat_rows = stmt
@@ -87,17 +87,19 @@ pub fn get_chats(state: State<'_, DbState>) -> Result<Vec<Chat>, String> {
                 row.get::<_, i32>(8)? != 0,
                 row.get::<_, i32>(9)? != 0,
                 row.get::<_, i32>(10)? != 0,
+                row.get::<_, i32>(11)? != 0,
+                row.get::<_, i32>(12)?,
             ))
         })
         .map_err(|e| e.to_string())?;
         
     let mut chats = Vec::new();
     for row in chat_rows {
-        let (id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked) = row.map_err(|e| e.to_string())?;
+        let (id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked, is_verified, ephemeral_timer) = row.map_err(|e| e.to_string())?;
         
         // Fetch messages for this chat
         let mut msg_stmt = conn
-            .prepare("SELECT id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url FROM messages WHERE chat_id = ?1 ORDER BY rowid ASC")
+            .prepare("SELECT id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url, attachment_duration, reply_to, reactions FROM messages WHERE chat_id = ?1 ORDER BY rowid ASC")
             .map_err(|e| e.to_string())?;
             
         let msg_rows = msg_stmt
@@ -105,12 +107,19 @@ pub fn get_chats(state: State<'_, DbState>) -> Result<Vec<Chat>, String> {
                 let attachment_name: Option<String> = m_row.get(7)?;
                 let attachment_type: Option<String> = m_row.get(8)?;
                 let attachment_url: Option<String> = m_row.get(9)?;
+                let attachment_duration: Option<String> = m_row.get(10)?;
                 
                 let attachment = if let (Some(name), Some(r#type)) = (attachment_name, attachment_type) {
-                    Some(Attachment { name, r#type, url: attachment_url })
+                    Some(Attachment { name, r#type, url: attachment_url, duration: attachment_duration })
                 } else {
                     None
                 };
+
+                let reply_to_str: Option<String> = m_row.get(11)?;
+                let reply_to = reply_to_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                let reactions_str: Option<String> = m_row.get(12)?;
+                let reactions = reactions_str.and_then(|s| serde_json::from_str(&s).ok());
                 
                 Ok(Message {
                     id: m_row.get(0)?,
@@ -121,6 +130,8 @@ pub fn get_chats(state: State<'_, DbState>) -> Result<Vec<Chat>, String> {
                     is_sender: m_row.get::<_, i32>(5)? != 0,
                     status: m_row.get(6)?,
                     attachment,
+                    reply_to,
+                    reactions,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -142,6 +153,8 @@ pub fn get_chats(state: State<'_, DbState>) -> Result<Vec<Chat>, String> {
             is_muted,
             is_archived,
             is_blocked,
+            is_verified: Some(is_verified),
+            ephemeral_timer: Some(ephemeral_timer),
             messages,
         });
     }
@@ -153,7 +166,7 @@ pub fn get_chats(state: State<'_, DbState>) -> Result<Vec<Chat>, String> {
 pub fn get_messages(chat_id: String, state: State<'_, DbState>) -> Result<Vec<Message>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url FROM messages WHERE chat_id = ?1 ORDER BY rowid ASC")
+        .prepare("SELECT id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url, attachment_duration, reply_to, reactions FROM messages WHERE chat_id = ?1 ORDER BY rowid ASC")
         .map_err(|e| e.to_string())?;
         
     let msg_rows = stmt
@@ -161,12 +174,19 @@ pub fn get_messages(chat_id: String, state: State<'_, DbState>) -> Result<Vec<Me
             let attachment_name: Option<String> = row.get(7)?;
             let attachment_type: Option<String> = row.get(8)?;
             let attachment_url: Option<String> = row.get(9)?;
+            let attachment_duration: Option<String> = row.get(10)?;
             
             let attachment = if let (Some(name), Some(r#type)) = (attachment_name, attachment_type) {
-                Some(Attachment { name, r#type, url: attachment_url })
+                Some(Attachment { name, r#type, url: attachment_url, duration: attachment_duration })
             } else {
                 None
             };
+
+            let reply_to_str: Option<String> = row.get(11)?;
+            let reply_to = reply_to_str.and_then(|s| serde_json::from_str(&s).ok());
+
+            let reactions_str: Option<String> = row.get(12)?;
+            let reactions = reactions_str.and_then(|s| serde_json::from_str(&s).ok());
             
             Ok(Message {
                 id: row.get(0)?,
@@ -177,6 +197,8 @@ pub fn get_messages(chat_id: String, state: State<'_, DbState>) -> Result<Vec<Me
                 is_sender: row.get::<_, i32>(5)? != 0,
                 status: row.get(6)?,
                 attachment,
+                reply_to,
+                reactions,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -226,22 +248,25 @@ pub fn send_db_message(
         });
         
         conn.execute(
-            "INSERT INTO chats (id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked) 
-             VALUES (?1, ?2, ?3, ?4, 'offline', 0, ?1, 0, 0, 0, 0)",
+            "INSERT INTO chats (id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked, is_verified, ephemeral_timer) 
+             VALUES (?1, ?2, ?3, ?4, 'offline', 0, ?1, 0, 0, 0, 0, 0, 0)",
             params![chat_id, name, avatar, avatar_color],
         )
         .map_err(|e| e.to_string())?;
     }
 
-    let (attachment_name, attachment_type, attachment_url) = if let Some(ref att) = message.attachment {
-        (Some(att.name.clone()), Some(att.r#type.clone()), att.url.clone())
+    let (attachment_name, attachment_type, attachment_url, attachment_duration) = if let Some(ref att) = message.attachment {
+        (Some(att.name.clone()), Some(att.r#type.clone()), att.url.clone(), att.duration.clone())
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
+
+    let reply_to_str = message.reply_to.as_ref().and_then(|r| serde_json::to_string(r).ok());
+    let reactions_str = message.reactions.as_ref().and_then(|r| serde_json::to_string(r).ok());
     
     conn.execute(
-        "INSERT INTO messages (id, chat_id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT OR REPLACE INTO messages (id, chat_id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url, attachment_duration, reply_to, reactions) 
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             message.id,
             chat_id,
@@ -254,10 +279,58 @@ pub fn send_db_message(
             attachment_name,
             attachment_type,
             attachment_url,
+            attachment_duration,
+            reply_to_str,
+            reactions_str,
         ],
     )
     .map_err(|e| e.to_string())?;
     
+    Ok(())
+}
+
+#[tauri::command]
+pub fn verify_peer(
+    chat_id: String,
+    is_verified: bool,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE chats SET is_verified = ?1 WHERE id = ?2",
+        params![if is_verified { 1 } else { 0 }, chat_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_ephemeral_timer(
+    chat_id: String,
+    timer_seconds: i32,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE chats SET ephemeral_timer = ?1 WHERE id = ?2",
+        params![timer_seconds, chat_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_db_message(
+    chat_id: String,
+    message_id: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM messages WHERE chat_id = ?1 AND id = ?2",
+        params![chat_id, message_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

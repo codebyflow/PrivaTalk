@@ -3099,3 +3099,74 @@ body, html {
   align-items: center;
   justify-content: center;
 }
+
+/* ==========================================
+   7. Voice Notes & Audio Attachment Player
+   ========================================== */
+.audio-attachment-player {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 6px;
+  min-width: 240px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+.audio-attachment-player .play-pause-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.2s, background 0.2s;
+}
+.audio-attachment-player .play-pause-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+.audio-attachment-player .player-seekbar-row {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  gap: 4px;
+}
+.audio-attachment-player .audio-seeker {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  accent-color: #7c4dff;
+  cursor: pointer;
+  outline: none;
+  border: none;
+}
+.audio-attachment-player .audio-duration-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72em;
+  opacity: 0.7;
+  font-family: monospace;
+}
+
+/* Ephemeral dropdown, reaction capsules and tooltips transitions */
+.ephemeral-dropdown button:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+.ephemeral-dropdown button.active {
+  background: rgba(124, 77, 255, 0.3) !important;
+}
+.reaction-capsule {
+  transition: transform 0.15s, background-color 0.15s;
+}
+.reaction-capsule:hover {
+  transform: scale(1.08);
+  background-color: rgba(255, 255, 255, 0.12) !important;
+}

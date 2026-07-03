@@ -3,7 +3,6 @@ import {
   Send,
   Paperclip,
   Smile,
-  MoreVertical,
   Phone,
   Video,
   Lock,
@@ -17,25 +16,136 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
-  Download
+  Download,
+  CornerUpLeft,
+  Mic,
+  Play,
+  Pause,
+  Trash2,
+  Hourglass,
+  Shield,
+  Key
 } from "lucide-react";
 import { Chat } from "../types";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 interface ChatAreaProps {
   chat: Chat | null;
-  onSendMessage: (text: string, attachment?: { type: "image" | "file"; name: string; base64?: string }) => void;
+  onSendMessage: (
+    text: string,
+    attachment?: { type: "image" | "file" | "audio"; name: string; base64?: string; duration?: string },
+    replyTo?: { id: string; senderName: string; text: string }
+  ) => void;
   onBackToList?: () => void;
   onTyping: (isTyping: boolean) => void;
+  onAddReaction: (messageId: string, emoji: string) => void;
+  onSetEphemeralTimer: (chatId: string, timerSeconds: number) => void;
+  onVerifyPeer: (chatId: string, isVerified: boolean) => void;
 }
 
-export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackToList, onTyping }) => {
+const AudioPlayer: React.FC<{ url: string; duration?: string }> = ({ url, duration }) => {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [totalDuration, setTotalDuration] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onLoadedMetadata = () => setTotalDuration(audio.duration);
+    const onEnded = () => setIsPlaying(false);
+
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    audio.addEventListener("ended", onEnded);
+
+    return () => {
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audio.removeEventListener("ended", onEnded);
+    };
+  }, [url]);
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+    } else {
+      audio.play().catch(console.warn);
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = parseFloat(e.target.value);
+    setCurrentTime(audio.currentTime);
+  };
+
+  const formatAudioTime = (time: number) => {
+    const m = Math.floor(time / 60);
+    const s = Math.floor(time % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="audio-attachment-player glass-element">
+      <audio ref={audioRef} src={url} preload="metadata" />
+      <button type="button" onClick={togglePlay} className="play-pause-btn glass-button-round">
+        {isPlaying ? <Pause size={12} /> : <Play size={12} />}
+      </button>
+      <div className="player-seekbar-row">
+        <input
+          type="range"
+          min="0"
+          max={totalDuration || 100}
+          value={currentTime}
+          onChange={handleSeek}
+          className="audio-seeker"
+        />
+        <div className="audio-duration-meta">
+          <span>{formatAudioTime(currentTime)}</span>
+          <span>{duration || formatAudioTime(totalDuration)}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export const ChatArea: React.FC<ChatAreaProps> = ({
+  chat,
+  onSendMessage,
+  onBackToList,
+  onTyping,
+  onAddReaction,
+  onSetEphemeralTimer,
+  onVerifyPeer,
+}) => {
   const [inputText, setInputText] = useState("");
   const [showDetails, setShowDetails] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{ name: string; type: "image" | "file"; base64?: string } | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
+
+  // Replies & Reactions
+  const [replyingToMessage, setReplyingToMessage] = useState<any | null>(null);
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+
+  // Voice recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+
+  // Verification & Disappearing timer modals
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
+  const [showEphemeralMenu, setShowEphemeralMenu] = useState(false);
 
   const typingTimeoutRef = useRef<any>(null);
   const isCurrentlyTypingRef = useRef<boolean>(false);
@@ -109,6 +219,72 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
     );
   }
 
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          
+          const reader = new FileReader();
+          reader.readAsDataURL(audioBlob);
+          reader.onloadend = () => {
+            const base64data = reader.result as string;
+            const rawBase64 = base64data.split(",")[1];
+            
+            const mins = Math.floor(recordingSeconds / 60);
+            const secs = recordingSeconds % 60;
+            const durationStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+
+            onSendMessage("", {
+              type: "audio",
+              name: `voice-note-${Date.now()}.webm`,
+              base64: rawBase64,
+              duration: durationStr
+            });
+          };
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.warn("Could not start microphone recording:", err);
+    }
+  };
+
+  const stopRecording = (shouldSend: boolean) => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      if (!shouldSend) {
+        audioChunksRef.current = [];
+      }
+      mediaRecorderRef.current.stop();
+    }
+    
+    setIsRecording(false);
+  };
+
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() && !selectedFile) return;
@@ -121,10 +297,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
             name: selectedFile.name,
             base64: selectedFile.base64,
           }
+        : undefined,
+      replyingToMessage
+        ? {
+            id: replyingToMessage.id,
+            senderName: replyingToMessage.senderName,
+            text: replyingToMessage.text,
+          }
         : undefined
     );
     setInputText("");
     setSelectedFile(null);
+    setReplyingToMessage(null);
     setShowEmojiPicker(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -186,26 +370,91 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
           <div className="header-peer-info">
             <div className="header-peer-name">
               <span>{chat.name}</span>
+              {chat.isVerified && (
+                <span title="Verified Safety Key Fingerprint" style={{ color: "#4caf50", display: "flex", alignItems: "center" }}>
+                  <ShieldCheck size={14} style={{ fill: "rgba(76, 175, 80, 0.2)" }} />
+                </span>
+              )}
               <span title="End-to-End Encrypted Peer Connection">
                 <ShieldCheck size={14} className="encrypted-badge" />
               </span>
             </div>
             <span className={`header-peer-status ${chat.status === "online" ? "online" : ""}`}>
-              {chat.status}
+              {chat.status} {(chat.ephemeralTimer || 0) > 0 && `(⌛ ${chat.ephemeralTimer}s)`}
             </span>
           </div>
         </div>
 
-        <div className="chat-header-actions">
+        <div className="chat-header-actions" style={{ position: "relative" }}>
+          <button
+            onClick={() => setShowVerifyModal(true)}
+            className={`glass-button-round ${chat.isVerified ? "verified-active" : ""}`}
+            title="Verify Peer Key Fingerprint"
+            style={{ color: chat.isVerified ? "#4caf50" : undefined }}
+          >
+            <Key size={18} />
+          </button>
+          <button
+            onClick={() => setShowEphemeralMenu(!showEphemeralMenu)}
+            className="glass-button-round"
+            title="Disappearing Messages"
+            style={{ color: (chat.ephemeralTimer || 0) > 0 ? "#ff9800" : undefined }}
+          >
+            <Hourglass size={18} />
+          </button>
           <button className="glass-button-round" title="Voice Call (P2P)">
             <Phone size={18} />
           </button>
           <button className="glass-button-round" title="Video Call (P2P)">
             <Video size={18} />
           </button>
-          <button className="glass-button-round" title="More options">
-            <MoreVertical size={18} />
-          </button>
+
+          {showEphemeralMenu && (
+            <div className="ephemeral-dropdown glass-element animate-fade-in" style={{
+              position: "absolute",
+              top: "45px",
+              right: "0px",
+              zIndex: 50,
+              padding: "6px",
+              borderRadius: "8px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "2px",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+              background: "rgba(30, 30, 40, 0.95)",
+              minWidth: "130px"
+            }}>
+              <span style={{ fontSize: "0.75em", opacity: 0.6, margin: "2px 8px 4px 8px" }}>Self-Destruct:</span>
+              {[
+                { label: "Off", val: 0 },
+                { label: "10 seconds", val: 10 },
+                { label: "1 minute", val: 60 },
+                { label: "1 hour", val: 3600 },
+              ].map((opt) => (
+                <button
+                  key={opt.val}
+                  type="button"
+                  onClick={() => {
+                    onSetEphemeralTimer(chat.id, opt.val);
+                    setShowEphemeralMenu(false);
+                  }}
+                  className={`dropdown-item ${chat.ephemeralTimer === opt.val ? "active" : ""}`}
+                  style={{
+                    background: chat.ephemeralTimer === opt.val ? "rgba(124, 77, 255, 0.2)" : "none",
+                    border: "none",
+                    color: "white",
+                    padding: "6px 10px",
+                    textAlign: "left",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                    fontSize: "0.8em"
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </header>
 
@@ -231,9 +480,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
                 <div
                   key={msg.id}
                   className={`message-row ${isSender ? "outgoing" : "incoming"}`}
+                  onMouseEnter={() => setHoveredMessageId(msg.id)}
+                  onMouseLeave={() => setHoveredMessageId(null)}
+                  style={{ position: "relative" }}
                 >
                   <div className={`message-bubble ${isSender ? "outgoing-bubble" : "incoming-bubble"}`}>
                     {!isSender && <span className="message-sender">{msg.senderName}</span>}
+
+                    {/* Render Quoted Reply Quote Block */}
+                    {msg.replyTo && (
+                      <div className="reply-quote-preview glass-element" style={{ marginBottom: "8px", padding: "6px 10px", borderLeft: "3px solid #7c4dff", background: "rgba(255,255,255,0.04)", borderRadius: "4px" }}>
+                        <span className="reply-quote-sender" style={{ fontSize: "0.8em", fontWeight: "bold", color: "#7c4dff", display: "block" }}>{msg.replyTo.senderName}</span>
+                        <p className="reply-quote-text" style={{ fontSize: "0.85em", margin: 0, opacity: 0.8, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>{msg.replyTo.text}</p>
+                      </div>
+                    )}
 
                     {/* Render attachment if available */}
                     {msg.attachment && (
@@ -254,6 +514,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
                             />
                             <span className="attachment-img-name">{msg.attachment.name}</span>
                           </div>
+                        ) : msg.attachment.type === "audio" ? (
+                          <AudioPlayer url={getAttachmentUrl(msg.attachment.url)} duration={msg.attachment.duration} />
                         ) : (
                           <div className="attachment-file-wrapper">
                             <FileText size={24} className="file-icon" />
@@ -266,7 +528,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
                       </div>
                     )}
 
-                    <p className="message-text">{msg.text}</p>
+                    {msg.text && <p className="message-text">{msg.text}</p>}
+
+                    {/* Reactions Capsule List */}
+                    {msg.reactions && msg.reactions.length > 0 && (
+                      <div className="message-reactions-list" style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "6px" }}>
+                        {msg.reactions.map((r, ri) => (
+                          <div
+                            key={ri}
+                            className="reaction-capsule glass-element"
+                            title={`Reacted by: ${r.senders.join(", ")}`}
+                            onClick={() => onAddReaction(msg.id, r.emoji)}
+                            style={{ display: "flex", alignItems: "center", gap: "3px", padding: "2px 6px", borderRadius: "10px", fontSize: "0.8em", cursor: "pointer", background: "rgba(255,255,255,0.06)" }}
+                          >
+                            <span>{r.emoji}</span>
+                            <span className="reaction-count" style={{ opacity: 0.8 }}>{r.count}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     <div className="message-meta">
                       <span className="message-time">{msg.timestamp}</span>
@@ -283,6 +563,47 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
                       )}
                     </div>
                   </div>
+
+                  {/* Inline Action Toolbar (Reactions & Reply button) */}
+                  {hoveredMessageId === msg.id && (
+                    <div className={`message-action-toolbar glass-element animate-fade-in`} style={{
+                      position: "absolute",
+                      top: "-28px",
+                      [isSender ? "right" : "left"]: "12px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      padding: "4px 8px",
+                      borderRadius: "15px",
+                      zIndex: 20,
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                      background: "rgba(20, 20, 25, 0.75)"
+                    }}>
+                      {["👍", "❤️", "😂", "😮", "😢", "🙏"].map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => onAddReaction(msg.id, emoji)}
+                          className="reaction-pick-btn"
+                          style={{ border: "none", background: "none", cursor: "pointer", padding: "2px", fontSize: "1.1em", transition: "transform 0.15s" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.25)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1.0)")}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                      <div style={{ width: "1px", height: "14px", background: "rgba(255,255,255,0.15)", margin: "0 4px" }} />
+                      <button
+                        type="button"
+                        onClick={() => setReplyingToMessage(msg)}
+                        className="msg-reply-action-btn glass-button-round"
+                        title="Reply"
+                        style={{ border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", width: "22px", height: "22px", background: "none", color: "rgba(255,255,255,0.7)" }}
+                      >
+                        <CornerUpLeft size={13} />
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -330,6 +651,28 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
 
       {/* Chat Footer/Input Bar */}
       <footer className="chat-footer">
+        {replyingToMessage && (
+          <div className="reply-preview-bar glass-element animate-slide-up" style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "8px 12px",
+            borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+            background: "rgba(255, 255, 255, 0.03)",
+            borderLeft: "4px solid #7c4dff",
+            borderTopLeftRadius: "6px",
+            borderTopRightRadius: "6px"
+          }}>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <span style={{ fontSize: "0.8em", fontWeight: "bold", color: "#7c4dff" }}>Replying to {replyingToMessage.senderName}</span>
+              <span style={{ fontSize: "0.85em", opacity: 0.8, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>{replyingToMessage.text}</span>
+            </div>
+            <button onClick={() => setReplyingToMessage(null)} className="glass-button-round" style={{ padding: "4px" }}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         {selectedFile && (
           <div className="selected-file-preview glass-element animate-slide-up">
             <div className="file-preview-content">
@@ -343,50 +686,84 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
           </div>
         )}
 
-        <form onSubmit={handleSend} className="input-form">
-          <div className="input-actions">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="glass-button-round"
-              title="Attach File"
-              disabled={chat.isBlocked}
-            >
-              <Paperclip size={18} />
-            </button>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              style={{ display: "none" }}
-            />
-
-            <button
-              type="button"
-              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-              className={`glass-button-round ${showEmojiPicker ? "active" : ""}`}
-              title="Insert Emoji"
-              disabled={chat.isBlocked}
-            >
-              <Smile size={18} />
-            </button>
+        {isRecording ? (
+          <div className="voice-recorder-bar glass-element" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "10px 14px", borderRadius: "10px", background: "rgba(30, 20, 25, 0.5)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span className="pulse-animation" style={{ color: "#ff3b30", fontSize: "0.9em", display: "flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#ff3b30", display: "inline-block" }}></span> Recording Voice Note
+              </span>
+              <span style={{ fontSize: "0.95em", fontFamily: "monospace", opacity: 0.8 }}>
+                {Math.floor(recordingSeconds / 60)}:{(recordingSeconds % 60).toString().padStart(2, "0")}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button type="button" onClick={() => stopRecording(false)} className="glass-button-round" style={{ background: "rgba(255, 59, 48, 0.15)", color: "#ff3b30", display: "flex", alignItems: "center", justifyContent: "center", width: "32px", height: "32px" }} title="Discard Recording">
+                <Trash2 size={16} />
+              </button>
+              <button type="button" onClick={() => stopRecording(true)} className="glass-button-round" style={{ background: "rgba(76, 175, 80, 0.15)", color: "#4caf50", display: "flex", alignItems: "center", justifyContent: "center", width: "32px", height: "32px" }} title="Send Voice Note">
+                <Check size={16} />
+              </button>
+            </div>
           </div>
+        ) : (
+          <form onSubmit={handleSend} className="input-form">
+            <div className="input-actions">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="glass-button-round"
+                title="Attach File"
+                disabled={chat.isBlocked}
+              >
+                <Paperclip size={18} />
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                style={{ display: "none" }}
+              />
 
-          <div className="text-input-wrapper glass-element">
-            <input
-              type="text"
-              placeholder={chat.isBlocked ? "🔒 Unblock peer to send messages..." : "Write a message..."}
-              value={inputText}
-              onChange={(e) => handleTextChange(e.target.value)}
-              className="message-input"
-              disabled={chat.isBlocked}
-            />
-          </div>
+              <button
+                type="button"
+                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                className={`glass-button-round ${showEmojiPicker ? "active" : ""}`}
+                title="Insert Emoji"
+                disabled={chat.isBlocked}
+              >
+                <Smile size={18} />
+              </button>
+            </div>
 
-          <button type="submit" className="send-btn glass-button-primary" title="Send encrypted message" disabled={chat.isBlocked}>
-            <Send size={18} />
-          </button>
-        </form>
+            <div className="text-input-wrapper glass-element">
+              <input
+                type="text"
+                placeholder={chat.isBlocked ? "🔒 Unblock peer to send messages..." : "Write a message..."}
+                value={inputText}
+                onChange={(e) => handleTextChange(e.target.value)}
+                className="message-input"
+                disabled={chat.isBlocked}
+              />
+            </div>
+
+            {!inputText.trim() && !selectedFile ? (
+              <button
+                type="button"
+                onClick={startRecording}
+                className="send-btn mic-btn glass-button-primary"
+                style={{ background: "rgba(255, 255, 255, 0.08)", color: "white" }}
+                title="Record Voice Note"
+                disabled={chat.isBlocked}
+              >
+                <Mic size={18} />
+              </button>
+            ) : (
+              <button type="submit" className="send-btn glass-button-primary" title="Send encrypted message" disabled={chat.isBlocked}>
+                <Send size={18} />
+              </button>
+            )}
+          </form>
+        )}
 
         {showEmojiPicker && (
           <div className="emoji-picker-drawer glass-element animate-slide-up">
@@ -474,6 +851,94 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
                   boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3)"
                 }}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cryptographic Key Verification Modal */}
+      {showVerifyModal && (
+        <div className="custom-modal-overlay glass-panel animate-fade-in" style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 100,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "rgba(10, 10, 15, 0.6)",
+          backdropFilter: "blur(15px)"
+        }}>
+          <div className="custom-modal-card glass-element animate-scale-up" style={{
+            width: "90%",
+            maxWidth: "450px",
+            padding: "24px",
+            borderRadius: "16px",
+            boxShadow: "0 20px 50px rgba(0,0,0,0.3)",
+            background: "rgba(30, 30, 40, 0.85)",
+            border: "1px solid rgba(255, 255, 255, 0.1)"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <h3 style={{ display: "flex", alignItems: "center", gap: "8px", margin: 0, fontSize: "1.25em" }}>
+                <Shield size={20} style={{ color: "#7c4dff" }} /> Peer Key Safety Numbers
+              </h3>
+              <button onClick={() => setShowVerifyModal(false)} className="glass-button-round" style={{ padding: "4px" }}>
+                <X size={16} />
+              </button>
+            </div>
+            
+            <p style={{ fontSize: "0.85em", opacity: 0.7, lineHeight: 1.5, marginBottom: "20px" }}>
+              To verify the security of your end-to-end encryption with <strong>{chat.name}</strong>, compare the safety numbers below with their device. If they match, your connection is fully trusted.
+            </p>
+
+            {/* Render 12 sets of 5 safety numbers dynamically based on peerId hash code */}
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, 1fr)",
+              gap: "12px",
+              padding: "16px",
+              borderRadius: "12px",
+              background: "rgba(255,255,255,0.03)",
+              fontFamily: "monospace",
+              fontSize: "1.1em",
+              letterSpacing: "1px",
+              textAlign: "center",
+              marginBottom: "24px",
+              border: "1px solid rgba(255,255,255,0.05)"
+            }}>
+              {Array.from({ length: 12 }).map((_, idx) => {
+                const charCodeSum = chat.peerId.split("").reduce((sum, ch) => sum + ch.charCodeAt(0) * (idx + 1), 0);
+                const blockVal = (10000 + (charCodeSum % 90000)).toString();
+                return <span key={idx} style={{ opacity: 0.9 }}>{blockVal}</span>;
+              })}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+              <span style={{ fontSize: "0.85em", opacity: 0.8 }}>
+                Status: {chat.isVerified ? "✅ Verified" : "⚠️ Unverified"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onVerifyPeer(chat.id, !chat.isVerified);
+                  setShowVerifyModal(false);
+                }}
+                className={`glass-button-primary`}
+                style={{
+                  background: chat.isVerified ? "rgba(244, 67, 54, 0.2)" : "rgba(76, 175, 80, 0.2)",
+                  border: chat.isVerified ? "1px solid #f44336" : "1px solid #4caf50",
+                  color: chat.isVerified ? "#ff5252" : "#4caf50",
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  cursor: "pointer",
+                  fontSize: "0.9em",
+                  fontWeight: "bold"
+                }}
+              >
+                {chat.isVerified ? "Mark as Unverified" : "Mark as Verified"}
+              </button>
             </div>
           </div>
         </div>

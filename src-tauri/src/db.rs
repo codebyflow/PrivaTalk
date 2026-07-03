@@ -37,10 +37,27 @@ pub struct Contact {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct ReplyTo {
+    pub id: String,
+    pub sender_name: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Reaction {
+    pub emoji: String,
+    pub count: i32,
+    pub senders: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Attachment {
-    pub r#type: String, // "image" | "file"
+    pub r#type: String, // "image" | "file" | "audio"
     pub name: String,
     pub url: Option<String>,
+    pub duration: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -54,6 +71,8 @@ pub struct Message {
     pub is_sender: bool,
     pub status: String,
     pub attachment: Option<Attachment>,
+    pub reply_to: Option<ReplyTo>,
+    pub reactions: Option<Vec<Reaction>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -70,6 +89,8 @@ pub struct Chat {
     pub is_muted: bool,
     pub is_archived: bool,
     pub is_blocked: bool,
+    pub is_verified: Option<bool>,
+    pub ephemeral_timer: Option<i32>,
     pub messages: Vec<Message>,
 }
 
@@ -137,10 +158,16 @@ pub fn init_db<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
             is_pinned INTEGER NOT NULL DEFAULT 0,
             is_muted INTEGER NOT NULL DEFAULT 0,
             is_archived INTEGER NOT NULL DEFAULT 0,
-            is_blocked INTEGER NOT NULL DEFAULT 0
+            is_blocked INTEGER NOT NULL DEFAULT 0,
+            is_verified INTEGER NOT NULL DEFAULT 0,
+            ephemeral_timer INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
+
+    // Migration updates for existing databases
+    let _ = conn.execute("ALTER TABLE chats ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE chats ADD COLUMN ephemeral_timer INTEGER NOT NULL DEFAULT 0", []);
 
     // Create messages table
     conn.execute(
@@ -156,10 +183,18 @@ pub fn init_db<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
             attachment_name TEXT,
             attachment_type TEXT,
             attachment_url TEXT,
+            attachment_duration TEXT,
+            reply_to TEXT,
+            reactions TEXT,
             FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
         )",
         [],
     )?;
+
+    // Migration updates for existing databases
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachment_duration TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN reply_to TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN reactions TEXT", []);
 
     // Create calls table
     conn.execute(

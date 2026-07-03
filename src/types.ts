@@ -7,11 +7,22 @@ export interface Message {
   isSender: boolean;
   status: "sent" | "delivered" | "read";
   attachment?: {
-    type: "image" | "file";
+    type: "image" | "file" | "audio";
     name: string;
     size?: string;
     url?: string;
+    duration?: string;
   };
+  replyTo?: {
+    id: string;
+    senderName: string;
+    text: string;
+  };
+  reactions?: {
+    emoji: string;
+    count: number;
+    senders: string[]; // List of senderNames/Ids who reacted
+  }[];
 }
 
 export interface Chat {
@@ -28,6 +39,8 @@ export interface Chat {
   isMuted?: boolean;
   isArchived?: boolean;
   isBlocked?: boolean;
+  isVerified?: boolean; // Cryptographic Safety Key verified
+  ephemeralTimer?: number; // Self-destruct delay in seconds (0 = disabled)
 }
 
 export interface Contact {
