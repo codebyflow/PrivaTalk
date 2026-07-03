@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Search, Plus, Radio, Zap, Pin, VolumeX, Archive, ShieldAlert, Trash2, Camera } from "lucide-react";
-import { Chat } from "../types";
+import { Chat, getSvgAvatarUrl } from "../types";
 import { QRScannerModal } from "./QRScannerModal";
 
 interface ChatListProps {
@@ -298,12 +298,12 @@ export const ChatList: React.FC<ChatListProps> = ({
                 >
                   {/* Avatar with Status Indicator */}
                   <div className="avatar-wrapper">
-                    <div
+                    <img
+                      src={chat.avatar.startsWith("data:") || chat.avatar.includes("/") ? chat.avatar : getSvgAvatarUrl(chat.name, chat.avatarColor)}
                       className="avatar-circle"
-                      style={{ background: chat.avatarColor || "#e2e8f0" }}
-                    >
-                      {chat.avatar}
-                    </div>
+                      alt={chat.name}
+                      style={{ border: "none", objectFit: "cover" }}
+                    />
                     <span className={statusClass}></span>
                     {chat.isBlocked && (
                       <span className="blocked-badge" title="Peer Blocked">

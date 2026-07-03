@@ -1,4 +1,4 @@
-use crate::db::{AppSettings, Attachment, Call, Chat, Contact, Message, DbState};
+use crate::db::{AppSettings, Attachment, Call, Chat, Contact, Message, DbState, BackupData};
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
@@ -6,7 +6,7 @@ use tauri::State;
 pub fn load_settings(state: State<'_, DbState>) -> Result<AppSettings, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT profile_name, profile_status, glass_opacity, glass_blur, bg_theme, p2p_transport, enable_mdns, enable_dht, enable_relay, bind_address, profile_avatar FROM settings WHERE id = 1")
+        .prepare("SELECT profile_name, profile_status, glass_opacity, glass_blur, bg_theme, p2p_transport, enable_mdns, enable_dht, enable_relay, bind_address, profile_avatar, chat_wallpaper FROM settings WHERE id = 1")
         .map_err(|e| e.to_string())?;
     
     let settings = stmt
@@ -23,6 +23,7 @@ pub fn load_settings(state: State<'_, DbState>) -> Result<AppSettings, String> {
                 enable_relay: row.get::<_, i32>(8)? != 0,
                 bind_address: row.get(9)?,
                 profile_avatar: row.get(10)?,
+                chat_wallpaper: row.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -45,7 +46,8 @@ pub fn save_settings(settings: AppSettings, state: State<'_, DbState>) -> Result
             enable_dht = ?8, 
             enable_relay = ?9, 
             bind_address = ?10, 
-            profile_avatar = ?11 
+            profile_avatar = ?11,
+            chat_wallpaper = ?12
          WHERE id = 1",
         params![
             settings.profile_name,
@@ -59,6 +61,7 @@ pub fn save_settings(settings: AppSettings, state: State<'_, DbState>) -> Result
             if settings.enable_relay { 1 } else { 0 },
             settings.bind_address,
             settings.profile_avatar,
+            settings.chat_wallpaper,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -544,4 +547,217 @@ pub fn save_attachment(
     std::fs::write(&file_path, bytes).map_err(|e| e.to_string())?;
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+fn xor_cipher(data: &[u8], password: &str) -> Vec<u8> {
+    if password.is_empty() {
+        return data.to_vec();
+    }
+    let pwd_bytes = password.as_bytes();
+    data.iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ pwd_bytes[i % pwd_bytes.len()])
+        .collect()
+}
+
+#[tauri::command]
+pub fn export_encrypted_backup(
+    password: String,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+    
+    let settings = load_settings(state.clone())?;
+    let contacts = get_contacts(state.clone())?;
+    let chats = get_chats(state.clone())?;
+    let calls = get_calls(state.clone())?;
+    
+    let backup = BackupData {
+        settings,
+        contacts,
+        chats,
+        calls,
+    };
+    
+    let json_str = serde_json::to_string(&backup).map_err(|e| e.to_string())?;
+    let encrypted_bytes = xor_cipher(json_str.as_bytes(), &password);
+    let base64_str = general_purpose::STANDARD.encode(encrypted_bytes);
+    
+    Ok(base64_str)
+}
+
+#[tauri::command]
+pub fn import_encrypted_backup(
+    password: String,
+    backup_base64: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    use base64::{Engine as _, engine::general_purpose};
+    
+    let decoded_bytes = general_purpose::STANDARD
+        .decode(&backup_base64)
+        .map_err(|_| "Invalid backup file: Base64 decode failed".to_string())?;
+        
+    let decrypted_bytes = xor_cipher(&decoded_bytes, &password);
+    
+    let decrypted_str = String::from_utf8(decrypted_bytes)
+        .map_err(|_| "Incorrect password or corrupted backup data (UTF8 decode failed)".to_string())?;
+        
+    let backup: BackupData = serde_json::from_str(&decrypted_str)
+        .map_err(|_| "Incorrect password or corrupted backup format".to_string())?;
+        
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    
+    // Overwrite Settings
+    conn.execute(
+        "UPDATE settings SET 
+            profile_name = ?1, 
+            profile_status = ?2, 
+            glass_opacity = ?3, 
+            glass_blur = ?4, 
+            bg_theme = ?5, 
+            p2p_transport = ?6, 
+            enable_mdns = ?7, 
+            enable_dht = ?8, 
+            enable_relay = ?9, 
+            bind_address = ?10, 
+            profile_avatar = ?11,
+            chat_wallpaper = ?12
+         WHERE id = 1",
+        params![
+            backup.settings.profile_name,
+            backup.settings.profile_status,
+            backup.settings.glass_opacity,
+            backup.settings.glass_blur,
+            backup.settings.bg_theme,
+            backup.settings.p2p_transport,
+            if backup.settings.enable_mdns { 1 } else { 0 },
+            if backup.settings.enable_dht { 1 } else { 0 },
+            if backup.settings.enable_relay { 1 } else { 0 },
+            backup.settings.bind_address,
+            backup.settings.profile_avatar,
+            backup.settings.chat_wallpaper,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    
+    // Overwrite Contacts
+    conn.execute("DELETE FROM contacts", []).map_err(|e| e.to_string())?;
+    for contact in backup.contacts {
+        conn.execute(
+            "INSERT INTO contacts (id, name, avatar, avatar_color, status, status_message, peer_id, is_muted, is_blocked) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                contact.id,
+                contact.name,
+                contact.avatar,
+                contact.avatar_color,
+                contact.status,
+                contact.status_message,
+                contact.peer_id,
+                if contact.is_muted { 1 } else { 0 },
+                if contact.is_blocked { 1 } else { 0 },
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    
+    // Overwrite Chats & Messages
+    conn.execute("DELETE FROM chats", []).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM messages", []).map_err(|e| e.to_string())?;
+    for chat in backup.chats {
+        let is_verified = chat.is_verified.unwrap_or(false);
+        let ephemeral_timer = chat.ephemeral_timer.unwrap_or(0);
+        conn.execute(
+            "INSERT INTO chats (id, name, avatar, avatar_color, status, unread_count, peer_id, is_pinned, is_muted, is_archived, is_blocked, is_verified, ephemeral_timer) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                chat.id,
+                chat.name,
+                chat.avatar,
+                chat.avatar_color,
+                chat.status,
+                chat.unread_count,
+                chat.peer_id,
+                if chat.is_pinned { 1 } else { 0 },
+                if chat.is_muted { 1 } else { 0 },
+                if chat.is_archived { 1 } else { 0 },
+                if chat.is_blocked { 1 } else { 0 },
+                if is_verified { 1 } else { 0 },
+                ephemeral_timer,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        
+        for msg in chat.messages {
+            let (attachment_name, attachment_type, attachment_url, attachment_duration) = if let Some(ref att) = msg.attachment {
+                (Some(att.name.clone()), Some(att.r#type.clone()), att.url.clone(), att.duration.clone())
+            } else {
+                (None, None, None, None)
+            };
+            
+            let reply_to_str = msg.reply_to.as_ref().and_then(|r| serde_json::to_string(r).ok());
+            let reactions_str = msg.reactions.as_ref().and_then(|r| serde_json::to_string(r).ok());
+            
+            conn.execute(
+                "INSERT INTO messages (id, chat_id, sender_id, sender_name, text, timestamp, is_sender, status, attachment_name, attachment_type, attachment_url, attachment_duration, reply_to, reactions) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    msg.id,
+                    chat.id,
+                    msg.sender_id,
+                    msg.sender_name,
+                    msg.text,
+                    msg.timestamp,
+                    if msg.is_sender { 1 } else { 0 },
+                    msg.status,
+                    attachment_name,
+                    attachment_type,
+                    attachment_url,
+                    attachment_duration,
+                    reply_to_str,
+                    reactions_str,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    
+    // Overwrite Calls
+    conn.execute("DELETE FROM calls", []).map_err(|e| e.to_string())?;
+    for call in backup.calls {
+        conn.execute(
+            "INSERT INTO calls (id, name, avatar, avatar_color, type, direction, timestamp, duration) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                call.id,
+                call.name,
+                call.avatar,
+                call.avatar_color,
+                call.r#type,
+                call.direction,
+                call.timestamp,
+                call.duration,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_message_status(
+    message_id: String,
+    status: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE messages SET status = ?1 WHERE id = ?2",
+        params![status, message_id],
+    )
+    .map_err(|e| e.to_string())?;
+    
+    Ok(())
 }

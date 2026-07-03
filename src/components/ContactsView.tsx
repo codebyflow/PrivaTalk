@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Search, UserPlus, MessageSquare, Phone, Shield, Copy, Check, Volume2, VolumeX, ShieldAlert, Trash2 } from "lucide-react";
-import { Contact } from "../types";
+import { Contact, getSvgAvatarUrl } from "../types";
 
 interface ContactsViewProps {
   contacts: Contact[];
@@ -112,12 +112,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             <div key={contact.id} className="contact-card glass-card">
               <div className="contact-card-header">
                 <div className="contact-avatar-wrapper">
-                  <div
+                  <img
+                    src={contact.avatar.startsWith("data:") || contact.avatar.includes("/") ? contact.avatar : getSvgAvatarUrl(contact.name, contact.avatarColor)}
                     className="contact-avatar"
-                    style={{ background: contact.avatarColor }}
-                  >
-                    {contact.avatar}
-                  </div>
+                    alt={contact.name}
+                    style={{ border: "none", objectFit: "cover" }}
+                  />
                   <span className={`status-dot ${contact.status}`}></span>
                   {contact.isBlocked && (
                     <span className="blocked-badge" title="Peer Blocked">

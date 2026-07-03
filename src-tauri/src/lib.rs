@@ -95,6 +95,9 @@ pub fn run() {
             commands::verify_peer,
             commands::set_ephemeral_timer,
             commands::delete_db_message,
+            commands::export_encrypted_backup,
+            commands::import_encrypted_backup,
+            commands::update_message_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

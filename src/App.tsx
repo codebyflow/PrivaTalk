@@ -811,6 +811,9 @@ function App() {
       }
     }
 
+    const isDisconnected = networkStatus === "disconnected";
+    const status = isDisconnected ? "failed" : "sent";
+
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const newMsg: Message = {
       id: `msg-user-${Date.now()}`,
@@ -819,7 +822,7 @@ function App() {
       text,
       timestamp,
       isSender: true,
-      status: "sent",
+      status,
       attachment: attachment
         ? {
             type: attachment.type,
@@ -848,10 +851,13 @@ function App() {
     // Save message to SQLite
     invoke("send_db_message", { chatId: selectedChatId, message: newMsg }).catch(console.error);
 
+    if (isDisconnected) {
+      return;
+    }
+
     // Emit to libp2p Rust background thread
     emit("p2p-send-message", { chatId: selectedChatId, ...newMsg }).catch(console.error);
 
-    // Simulate tick updates
     const messageId = newMsg.id;
 
     // After 800ms -> Delivered
@@ -890,6 +896,74 @@ function App() {
         })
       );
     }, 1600);
+  };
+
+  const handleRetryMessage = async (messageId: string) => {
+    if (!selectedChatId) return;
+
+    if (networkStatus === "disconnected") {
+      alert("Still disconnected from the P2P swarm. Cannot retry sending yet.");
+      return;
+    }
+
+    let targetMsg: Message | null = null;
+    setChats((prevChats) =>
+      prevChats.map((chat) => {
+        if (chat.id === selectedChatId) {
+          const updatedMessages = chat.messages.map((m) => {
+            if (m.id === messageId) {
+              targetMsg = { ...m, status: "sent" };
+              return targetMsg;
+            }
+            return m;
+          });
+          return { ...chat, messages: updatedMessages };
+        }
+        return chat;
+      })
+    );
+
+    if (targetMsg) {
+      await invoke("update_message_status", { messageId, status: "sent" }).catch(console.error);
+      emit("p2p-send-message", { chatId: selectedChatId, ...(targetMsg as Message) }).catch(console.error);
+
+      // Simulate delivered/read status ticks
+      setTimeout(() => {
+        setChats((prevChats) =>
+          prevChats.map((chat) => {
+            if (chat.id === selectedChatId) {
+              return {
+                ...chat,
+                messages: chat.messages.map((m) =>
+                  m.id === messageId ? { ...m, status: "delivered" } : m
+                ),
+              };
+            }
+            return chat;
+          })
+        );
+        invoke("update_message_status", { messageId, status: "delivered" }).catch(console.error);
+      }, 800);
+
+      setTimeout(() => {
+        setChats((prevChats) =>
+          prevChats.map((chat) => {
+            if (chat.id === selectedChatId) {
+              triggerAutoReply(chat.id, chat.name);
+              return {
+                ...chat,
+                messages: chat.messages.map((m) =>
+                  m.id === messageId ? { ...m, status: "read" } : m
+                ),
+                status: "typing...",
+              };
+            }
+            return chat;
+          })
+        );
+        invoke("update_message_status", { messageId, status: "read" }).catch(console.error);
+      }, 1600);
+    }
   };
 
   // Mock Automated Chat replies
@@ -1408,6 +1482,8 @@ function App() {
                 onAddReaction={handleLocalReaction}
                 onSetEphemeralTimer={handleSetEphemeralTimer}
                 onVerifyPeer={handleVerifyPeer}
+                wallpaper={settings?.chatWallpaper}
+                onRetryMessage={handleRetryMessage}
               />
             </div>
           )}

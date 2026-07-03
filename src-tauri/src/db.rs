@@ -19,6 +19,7 @@ pub struct AppSettings {
     pub enable_relay: bool,
     pub bind_address: String,
     pub profile_avatar: Option<String>,
+    pub chat_wallpaper: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -124,10 +125,14 @@ pub fn init_db<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
             enable_dht INTEGER NOT NULL,
             enable_relay INTEGER NOT NULL,
             bind_address TEXT NOT NULL,
-            profile_avatar TEXT
+            profile_avatar TEXT,
+            chat_wallpaper TEXT
         )",
         [],
     )?;
+
+    // Migration updates for existing settings tables
+    let _ = conn.execute("ALTER TABLE settings ADD COLUMN chat_wallpaper TEXT", []);
 
     // Create contacts table
     conn.execute(
@@ -240,4 +245,13 @@ pub fn init_db<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
     }
 
     Ok(conn)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupData {
+    pub settings: AppSettings,
+    pub contacts: Vec<Contact>,
+    pub chats: Vec<Chat>,
+    pub calls: Vec<Call>,
 }

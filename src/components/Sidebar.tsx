@@ -1,5 +1,6 @@
 import React from "react";
 import { MessageSquare, Users, Phone, Settings, Moon, Sun } from "lucide-react";
+import { getSvgAvatarUrl } from "../types";
 
 interface SidebarProps {
   activeTab: "chats" | "contacts" | "calls" | "settings";
@@ -84,7 +85,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="sidebar-profile" onClick={onProfileClick} title={`View Profile & QR-Code (${networkStatus})`} style={{ cursor: "pointer", position: "relative" }}>
           <div className="profile-avatar">
-            {profileAvatar ? <img src={profileAvatar} className="sidebar-avatar-img" alt="Profile" /> : "ME"}
+            <img src={profileAvatar || getSvgAvatarUrl("Me", "#7c4dff")} className="sidebar-avatar-img" alt="Profile" />
           </div>
           <span className={`network-status-badge ${networkStatus}`} />
         </div>

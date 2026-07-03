@@ -24,9 +24,11 @@ import {
   Trash2,
   Hourglass,
   Shield,
-  Key
+  Key,
+  Search,
+  AlertCircle
 } from "lucide-react";
-import { Chat } from "../types";
+import { Chat, getSvgAvatarUrl } from "../types";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 interface ChatAreaProps {
@@ -41,6 +43,8 @@ interface ChatAreaProps {
   onAddReaction: (messageId: string, emoji: string) => void;
   onSetEphemeralTimer: (chatId: string, timerSeconds: number) => void;
   onVerifyPeer: (chatId: string, isVerified: boolean) => void;
+  wallpaper?: string;
+  onRetryMessage?: (messageId: string) => void;
 }
 
 const AudioPlayer: React.FC<{ url: string; duration?: string }> = ({ url, duration }) => {
@@ -124,6 +128,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onAddReaction,
   onSetEphemeralTimer,
   onVerifyPeer,
+  wallpaper,
+  onRetryMessage,
 }) => {
   const [inputText, setInputText] = useState("");
   const [showDetails, setShowDetails] = useState(false);
@@ -147,6 +153,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [showEphemeralMenu, setShowEphemeralMenu] = useState(false);
 
+  // Drag and drop overlay
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Shared Media gallery sub-tab
+  const [detailSubTab, setDetailSubTab] = useState<"info" | "media">("info");
+
+  // File Transfer simulated progress spinner map
+  const [progressMap, setProgressMap] = useState<{ [msgId: string]: number }>({});
+
+  // In-Chat Search state
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+
   const typingTimeoutRef = useRef<any>(null);
   const isCurrentlyTypingRef = useRef<boolean>(false);
 
@@ -158,6 +177,112 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       }
     };
   }, []);
+
+  // File Transfer simulated progress scheduler
+  useEffect(() => {
+    if (!chat) return;
+    chat.messages.forEach((msg) => {
+      if (msg.attachment && progressMap[msg.id] === undefined) {
+        setProgressMap((prev) => ({ ...prev, [msg.id]: 0 }));
+        let currentProgress = 0;
+        const interval = setInterval(() => {
+          currentProgress += Math.floor(Math.random() * 25) + 15;
+          if (currentProgress >= 100) {
+            currentProgress = 100;
+            clearInterval(interval);
+          }
+          setProgressMap((prev) => ({ ...prev, [msg.id]: currentProgress }));
+        }, 200);
+      }
+    });
+  }, [chat?.messages?.length]);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const isImage = file.type.startsWith("image/");
+        setSelectedFile({
+          name: file.name,
+          type: isImage ? "image" : "file",
+          base64: reader.result as string,
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const renderMessageText = (msg: any) => {
+    const text = msg.text;
+    if (!text) return null;
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const matches = text.match(urlRegex);
+    
+    if (matches && matches.length > 0) {
+      const url = matches[0];
+      let title = "URL Link Preview";
+      let desc = "Open-graph link details metadata summary...";
+      let domain = "";
+      try {
+        domain = new URL(url).hostname;
+      } catch (err) {
+        domain = "link";
+      }
+      
+      if (url.includes("github.com")) {
+        title = "GitHub: Let's build from here";
+        desc = "GitHub is where over 100 million developers shape the future of software, hosting source repositories.";
+      } else if (url.includes("google.com")) {
+        title = "Google Search Index";
+        desc = "Search the world's information, including webpages, images, videos, and interactive maps.";
+      } else if (url.includes("unsplash.com")) {
+        title = "Unsplash: Beautiful Free Images";
+        desc = "Beautiful, free images and photos that you can download and use for any project.";
+      }
+      
+      return (
+        <>
+          <p className="message-text">
+            {text.split(url).map((part: string, i: number) => (
+              <React.Fragment key={i}>
+                {part}
+                {i === 0 && <a href={url} target="_blank" rel="noreferrer" className="chat-message-link" style={{ color: "#7c4dff", textDecoration: "underline" }}>{url}</a>}
+              </React.Fragment>
+            ))}
+          </p>
+          <a href={url} target="_blank" rel="noreferrer" className="url-preview-card glass-element animate-fade-in" style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "4px",
+            marginTop: "8px",
+            padding: "10px",
+            borderRadius: "8px",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            textDecoration: "none",
+            color: "white"
+          }}>
+            <span style={{ fontSize: "0.75em", opacity: 0.5, textTransform: "uppercase" }}>{domain}</span>
+            <strong style={{ fontSize: "0.9em", color: "#7c4dff" }}>{title}</strong>
+            <p style={{ fontSize: "0.8em", opacity: 0.8, margin: 0 }}>{desc}</p>
+          </a>
+        </>
+      );
+    }
+    return <p className="message-text">{text}</p>;
+  };
 
   const handleTextChange = (text: string) => {
     setInputText(text);
@@ -345,7 +470,39 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const emojis = ["😀", "😂", "🥰", "👍", "👎", "🔒", "🔑", "🦀", "🔥", "💻", "🚀", "🎉", "👀", "💡"];
 
   return (
-    <div className="chat-area-container glass-panel">
+    <div
+      className="chat-area-container glass-panel"
+      onDragOver={handleDragOver}
+      style={{ position: "relative" }}
+    >
+      {/* Full-screen Drag and Drop Overlay */}
+      {isDragging && (
+        <div
+          className="drag-drop-overlay glass-panel animate-fade-in"
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onDragOver={(e) => e.preventDefault()}
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(10, 10, 15, 0.7)",
+            backdropFilter: "blur(20px)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            borderRadius: "16px",
+            pointerEvents: "auto"
+          }}
+        >
+          <div className="pulse-animation" style={{ color: "#7c4dff", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+            <Paperclip size={48} />
+            <h3 style={{ margin: 0 }}>Drop files to attach</h3>
+            <p style={{ opacity: 0.6, fontSize: "0.9em" }}>Support images and documents up to 25 MB</p>
+          </div>
+        </div>
+      )}
       {/* Chat Header */}
       <header className="chat-header">
         <div
@@ -360,12 +517,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </button>
           )}
 
-          <div
+          <img
+            src={chat.avatar.startsWith("data:") || chat.avatar.includes("/") ? chat.avatar : getSvgAvatarUrl(chat.name, chat.avatarColor)}
             className="header-avatar"
-            style={{ background: chat.avatarColor || "#cbd5e1" }}
-          >
-            {chat.avatar}
-          </div>
+            alt={chat.name}
+            style={{ border: "none", objectFit: "cover" }}
+          />
 
           <div className="header-peer-info">
             <div className="header-peer-name">
@@ -401,6 +558,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             style={{ color: (chat.ephemeralTimer || 0) > 0 ? "#ff9800" : undefined }}
           >
             <Hourglass size={18} />
+          </button>
+          <button
+            onClick={() => setShowSearch(!showSearch)}
+            className={`glass-button-round ${showSearch ? "active" : ""}`}
+            title="Search active chat history"
+            style={{ color: showSearch ? "#7c4dff" : undefined }}
+          >
+            <Search size={18} />
           </button>
           <button className="glass-button-round" title="Voice Call (P2P)">
             <Phone size={18} />
@@ -458,12 +623,56 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
       </header>
 
+      {/* In-Chat Search bar dropdown */}
+      {showSearch && (
+        <div className="in-chat-search-bar glass-element animate-slide-down" style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          padding: "8px 16px",
+          borderBottom: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.02)"
+        }}>
+          <Search size={14} style={{ opacity: 0.6 }} />
+          <input
+            type="text"
+            placeholder="Search messages in this chat..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              flex: 1,
+              background: "none",
+              border: "none",
+              color: "white",
+              outline: "none",
+              fontSize: "0.85em"
+            }}
+          />
+          {searchQuery && (
+            <button onClick={() => setSearchQuery("")} className="glass-button-round" style={{ padding: "2px", border: "none" }}>
+              <X size={12} />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Main Grid: Messages + Optional Details Drawer */}
       <div className="chat-body-layout">
         {/* Messages Feed */}
-        <div className="messages-feed-wrapper">
+        <div className="messages-feed-wrapper" style={{
+          background: wallpaper === "aurora"
+            ? "linear-gradient(135deg, rgba(38, 70, 83, 0.45), rgba(42, 157, 143, 0.45))"
+            : wallpaper === "sunset"
+            ? "linear-gradient(135deg, rgba(230, 57, 70, 0.2), rgba(29, 53, 87, 0.45))"
+            : wallpaper === "matrix"
+            ? "radial-gradient(rgba(124, 77, 255, 0.12) 1px, transparent 1px), rgba(10, 10, 15, 0.45)"
+            : undefined,
+          backgroundSize: wallpaper === "matrix" ? "20px 20px" : undefined
+        }}>
           <div className="messages-scroll">
-            {chat.messages.map((msg) => {
+            {chat.messages
+              .filter((m) => !searchQuery || m.text.toLowerCase().includes(searchQuery.toLowerCase()))
+              .map((msg) => {
               if (msg.senderId === "system") {
                 return (
                   <div key={msg.id} className="system-message-row">
@@ -497,7 +706,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                     {/* Render attachment if available */}
                     {msg.attachment && (
-                      <div className="message-attachment glass-element">
+                      <div className="message-attachment glass-element" style={{ position: "relative" }}>
                         {msg.attachment.type === "image" ? (
                           <div
                             className="attachment-image-wrapper"
@@ -525,10 +734,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             </div>
                           </div>
                         )}
+
+                        {/* Simulated Transfer Progress Ring overlay */}
+                        {progressMap[msg.id] !== undefined && progressMap[msg.id] < 100 && (
+                          <div className="transfer-progress-overlay" style={{
+                            position: "absolute",
+                            inset: 0,
+                            background: "rgba(0,0,0,0.65)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            zIndex: 10,
+                            borderRadius: "8px",
+                            flexDirection: "column",
+                            gap: "4px"
+                          }}>
+                            <div className="spinner-progress" style={{
+                              width: "24px",
+                              height: "24px",
+                              border: "3px solid rgba(255,255,255,0.2)",
+                              borderTop: "3px solid #7c4dff",
+                              borderRadius: "50%",
+                              animation: "spin 1s linear infinite"
+                            }} />
+                            <span style={{ fontSize: "0.75em", color: "white", fontWeight: "bold" }}>{progressMap[msg.id]}%</span>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {msg.text && <p className="message-text">{msg.text}</p>}
+                    {renderMessageText(msg)}
 
                     {/* Reactions Capsule List */}
                     {msg.reactions && msg.reactions.length > 0 && (
@@ -552,7 +787,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       <span className="message-time">{msg.timestamp}</span>
                       {isSender && (
                         <span className="message-status">
-                          {msg.status === "read" ? (
+                          {msg.status === "failed" ? (
+                            <button
+                              type="button"
+                              onClick={() => onRetryMessage && onRetryMessage(msg.id)}
+                              style={{ background: "none", border: "none", color: "#ff5252", padding: 0, cursor: "pointer", display: "flex", alignItems: "center" }}
+                              title="Message failed to send. Click to retry."
+                            >
+                              <AlertCircle size={14} />
+                            </button>
+                          ) : msg.status === "read" ? (
                             <CheckCheck size={14} className="status-icon read" />
                           ) : msg.status === "delivered" ? (
                             <CheckCheck size={14} className="status-icon" />
@@ -622,28 +866,109 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </div>
 
             <div className="panel-body">
-              <div className="panel-section">
+              <div className="panel-section" style={{ paddingBottom: 0 }}>
                 <div className="panel-avatar-row">
-                  <div
+                  <img
+                    src={chat.avatar.startsWith("data:") || chat.avatar.includes("/") ? chat.avatar : getSvgAvatarUrl(chat.name, chat.avatarColor)}
                     className="panel-avatar"
-                    style={{ background: chat.avatarColor || "#cbd5e1" }}
-                  >
-                    {chat.avatar}
-                  </div>
+                    alt={chat.name}
+                    style={{ border: "none", objectFit: "cover" }}
+                  />
                   <h4>{chat.name}</h4>
                   <span className="status-tag online">{chat.status}</span>
                 </div>
               </div>
 
-              <div className="panel-section glass-element">
-                <div className="info-row">
-                  <Network size={14} className="info-row-icon" />
-                  <span className="info-label">Peer Identity (Ed25519)</span>
-                </div>
-                <div className="info-value-block">
-                  <code>{chat.peerId}</code>
-                </div>
+              {/* Detail Tabs */}
+              <div className="details-subtabs" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", marginBottom: "16px", marginTop: "16px" }}>
+                <button
+                  type="button"
+                  onClick={() => setDetailSubTab("info")}
+                  style={{
+                    flex: 1,
+                    background: "none",
+                    border: "none",
+                    color: "white",
+                    padding: "8px",
+                    cursor: "pointer",
+                    borderBottom: detailSubTab === "info" ? "2px solid #7c4dff" : "none",
+                    opacity: detailSubTab === "info" ? 1 : 0.6,
+                    fontWeight: detailSubTab === "info" ? "bold" : "normal",
+                    outline: "none"
+                  }}
+                >
+                  Info
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailSubTab("media")}
+                  style={{
+                    flex: 1,
+                    background: "none",
+                    border: "none",
+                    color: "white",
+                    padding: "8px",
+                    cursor: "pointer",
+                    borderBottom: detailSubTab === "media" ? "2px solid #7c4dff" : "none",
+                    opacity: detailSubTab === "media" ? 1 : 0.6,
+                    fontWeight: detailSubTab === "media" ? "bold" : "normal",
+                    outline: "none"
+                  }}
+                >
+                  Media
+                </button>
               </div>
+
+              {detailSubTab === "info" ? (
+                <>
+                  <div className="panel-section glass-element">
+                    <div className="info-row">
+                      <Network size={14} className="info-row-icon" />
+                      <span className="info-label">Peer Identity (Ed25519)</span>
+                    </div>
+                    <div className="info-value-block">
+                      <code>{chat.peerId}</code>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="shared-media-gallery" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px", maxHeight: "60vh", overflowY: "auto", paddingRight: "4px" }}>
+                  {chat.messages
+                    .filter((m) => m.attachment)
+                    .map((m) => {
+                      const att = m.attachment!;
+                      if (att.type === "image") {
+                        return (
+                          <img
+                            key={m.id}
+                            src={getAttachmentUrl(att.url) || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=60"}
+                            alt={att.name}
+                            onClick={() => {
+                              setLightboxUrl(getAttachmentUrl(att.url) || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=60");
+                              setZoomScale(1);
+                            }}
+                            style={{ width: "100%", height: "60px", objectFit: "cover", borderRadius: "6px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.08)" }}
+                          />
+                        );
+                      } else {
+                        return (
+                          <div
+                            key={m.id}
+                            className="gallery-file-card glass-element"
+                            title={att.name}
+                            style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60px", borderRadius: "6px", fontSize: "0.7em", padding: "4px", textAlign: "center", wordBreak: "break-all", border: "1px solid rgba(255,255,255,0.08)" }}
+                          >
+                            <FileText size={16} style={{ color: "#7c4dff" }} />
+                            <span style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis", opacity: 0.8 }}>{att.name}</span>
+                          </div>
+                        );
+                      }
+                    })}
+                  {chat.messages.filter((m) => m.attachment).length === 0 && (
+                    <span style={{ gridColumn: "span 3", opacity: 0.6, fontSize: "0.9em", textAlign: "center", padding: "20px 0" }}>No shared media.</span>
+                  )}
+                </div>
+              )}
             </div>
           </aside>
         )}
