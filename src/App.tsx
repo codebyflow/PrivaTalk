@@ -14,6 +14,84 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { Titlebar } from "./components/Titlebar";
 import "./App.css";
 
+class SoundSynthesizer {
+  private audioCtx: AudioContext | null = null;
+  private ringtoneInterval: any = null;
+
+  private initCtx() {
+    if (!this.audioCtx) {
+      this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (this.audioCtx.state === "suspended") {
+      this.audioCtx.resume();
+    }
+  }
+
+  playRingtone() {
+    this.initCtx();
+    this.stop();
+    if (!this.audioCtx) return;
+
+    const playTone = () => {
+      if (!this.audioCtx) return;
+      const osc1 = this.audioCtx.createOscillator();
+      const osc2 = this.audioCtx.createOscillator();
+      const gainNode = this.audioCtx.createGain();
+
+      osc1.type = "sine";
+      osc1.frequency.setValueAtTime(440, this.audioCtx.currentTime);
+      osc2.type = "sine";
+      osc2.frequency.setValueAtTime(480, this.audioCtx.currentTime);
+
+      gainNode.gain.setValueAtTime(0, this.audioCtx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.12, this.audioCtx.currentTime + 0.1);
+      gainNode.gain.setValueAtTime(0.12, this.audioCtx.currentTime + 1.2);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, this.audioCtx.currentTime + 1.5);
+
+      osc1.connect(gainNode);
+      osc2.connect(gainNode);
+      gainNode.connect(this.audioCtx.destination);
+
+      osc1.start();
+      osc2.start();
+      osc1.stop(this.audioCtx.currentTime + 1.5);
+      osc2.stop(this.audioCtx.currentTime + 1.5);
+    };
+
+    playTone();
+    this.ringtoneInterval = setInterval(playTone, 2500);
+  }
+
+  playConnectedBeep() {
+    this.initCtx();
+    this.stop();
+    if (!this.audioCtx) return;
+
+    const osc = this.audioCtx.createOscillator();
+    const gainNode = this.audioCtx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(600, this.audioCtx.currentTime);
+    osc.frequency.setValueAtTime(800, this.audioCtx.currentTime + 0.1);
+
+    gainNode.gain.setValueAtTime(0.08, this.audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, this.audioCtx.currentTime + 0.35);
+
+    osc.connect(gainNode);
+    gainNode.connect(this.audioCtx.destination);
+
+    osc.start();
+    osc.stop(this.audioCtx.currentTime + 0.35);
+  }
+
+  stop() {
+    if (this.ringtoneInterval) {
+      clearInterval(this.ringtoneInterval);
+      this.ringtoneInterval = null;
+    }
+  }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<"chats" | "contacts" | "calls" | "settings">("chats");
   const [chats, setChats] = useState<Chat[]>(initialChats);
@@ -30,6 +108,17 @@ function App() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const synthRef = useRef(new SoundSynthesizer());
+
+  // Call Diagnostics States
+  const [diagnostics, setDiagnostics] = useState<{
+    rtt?: number;
+    packetLoss?: number;
+    bpsIncoming?: number;
+    bpsOutgoing?: number;
+    codec?: string;
+  } | null>(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
@@ -78,6 +167,115 @@ function App() {
     }
     return () => clearInterval(interval);
   }, [activeCall?.status]);
+
+  // Synthesized Call Audio Player effects
+  useEffect(() => {
+    if (activeCall) {
+      if (activeCall.status === "ringing" && activeCall.direction === "incoming") {
+        synthRef.current.playRingtone();
+      } else if (activeCall.status === "connected") {
+        synthRef.current.playConnectedBeep();
+      }
+    } else {
+      synthRef.current.stop();
+    }
+    return () => {
+      synthRef.current.stop();
+    };
+  }, [activeCall?.status, activeCall?.direction]);
+
+  // Call Diagnostics stats polling loop
+  useEffect(() => {
+    if (!activeCall || activeCall.status !== "connected" || !pcRef.current) {
+      setDiagnostics(null);
+      return;
+    }
+
+    let lastBytesReceived = 0;
+    let lastBytesSent = 0;
+    let lastTimestamp = Date.now();
+
+    const interval = setInterval(async () => {
+      if (!pcRef.current) return;
+      try {
+        const stats = await pcRef.current.getStats();
+        let rtt = 0;
+        let packetLoss = 0;
+        let bytesReceived = 0;
+        let bytesSent = 0;
+        let codec = "opus";
+
+        stats.forEach((report) => {
+          if (report.type === "candidate-pair" && report.state === "succeeded") {
+            rtt = Math.round((report.currentRoundTripTime || 0) * 1000);
+          }
+          if (report.type === "inbound-rtp") {
+            packetLoss = Math.round((report.packetsLost || 0) / ((report.packetsReceived || 1) + (report.packetsLost || 0)) * 100);
+            bytesReceived = report.bytesReceived || 0;
+            if (report.codecId) {
+              const codecReport = stats.get(report.codecId);
+              if (codecReport) {
+                codec = codecReport.mimeType?.replace("audio/", "")?.replace("video/", "") || codec;
+              }
+            }
+          }
+          if (report.type === "outbound-rtp") {
+            bytesSent = report.bytesSent || 0;
+          }
+        });
+
+        const now = Date.now();
+        const duration = (now - lastTimestamp) / 1000;
+        const bpsIncoming = lastBytesReceived > 0 ? Math.round(((bytesReceived - lastBytesReceived) * 8) / duration) : 0;
+        const bpsOutgoing = lastBytesSent > 0 ? Math.round(((bytesSent - lastBytesSent) * 8) / duration) : 0;
+
+        lastBytesReceived = bytesReceived;
+        lastBytesSent = bytesSent;
+        lastTimestamp = now;
+
+        setDiagnostics({
+          rtt,
+          packetLoss: Math.max(0, Math.min(100, packetLoss)),
+          bpsIncoming,
+          bpsOutgoing,
+          codec
+        });
+      } catch (err) {
+        console.warn("Failed to get WebRTC stats:", err);
+      }
+    }, 2000);
+
+    return () => {
+      clearInterval(interval);
+      setDiagnostics(null);
+    };
+  }, [activeCall?.status]);
+
+  // Accessibility global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowProfileModal(false);
+        // Trigger click on close buttons of any active overlays
+        const lightboxCloseBtn = document.querySelector(".lightbox-controls .close-btn") as HTMLElement;
+        if (lightboxCloseBtn) lightboxCloseBtn.click();
+        
+        const verifyCloseBtn = document.querySelector(".custom-modal-card button") as HTMLElement;
+        if (verifyCloseBtn) verifyCloseBtn.click();
+      }
+      
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        e.preventDefault();
+        const searchInput = document.querySelector(".search-wrapper input") as HTMLInputElement;
+        if (searchInput) {
+          searchInput.focus();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const formatTimer = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1339,6 +1537,17 @@ function App() {
                     <Volume2 size={20} />
                   </button>
 
+                  {activeCall.status === "connected" && (
+                    <button
+                      onClick={() => setShowDiagnostics(!showDiagnostics)}
+                      className={`call-ctrl-btn glass-button-round ${showDiagnostics ? "active" : ""}`}
+                      style={{ background: showDiagnostics ? "rgba(124, 77, 255, 0.25)" : undefined, color: showDiagnostics ? "#7c4dff" : undefined }}
+                      title="Call Diagnostics & Network Quality"
+                    >
+                      <Shield size={20} />
+                    </button>
+                  )}
+
                   <button
                     onClick={handleEndCall}
                     className="call-ctrl-btn end-call-btn glass-button-round"
@@ -1349,6 +1558,54 @@ function App() {
                 </>
               )}
             </div>
+
+            {/* Diagnostics Stats overlay panel */}
+            {activeCall.status === "connected" && showDiagnostics && diagnostics && (
+              <div className="call-diagnostics-overlay glass-element animate-slide-up" style={{
+                marginTop: "16px",
+                width: "90%",
+                maxWidth: "400px",
+                padding: "16px",
+                borderRadius: "12px",
+                textAlign: "left",
+                background: "rgba(20, 20, 25, 0.7)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                fontSize: "0.85em",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.25)"
+              }}>
+                <h4 style={{ margin: "0 0 10px 0", display: "flex", alignItems: "center", gap: "6px", fontSize: "1em", color: "#7c4dff" }}>
+                  <Shield size={14} /> WebRTC Diagnostics & Quality
+                </h4>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div>
+                    <span style={{ opacity: 0.6, display: "block", fontSize: "0.9em" }}>Latency (RTT):</span>
+                    <strong style={{ fontSize: "1.1em" }}>{diagnostics.rtt !== undefined ? `${diagnostics.rtt} ms` : "Estimating..."}</strong>
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.6, display: "block", fontSize: "0.9em" }}>Packet Loss:</span>
+                    <strong style={{ fontSize: "1.1em", color: (diagnostics.packetLoss || 0) > 2 ? "#ff5252" : "#4caf50" }}>
+                      {diagnostics.packetLoss !== undefined ? `${diagnostics.packetLoss}%` : "0%"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.6, display: "block", fontSize: "0.9em" }}>Download (In):</span>
+                    <strong style={{ fontSize: "1.1em" }}>
+                      {diagnostics.bpsIncoming !== undefined ? `${Math.round(diagnostics.bpsIncoming / 1000)} kbps` : "Calculating..."}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.6, display: "block", fontSize: "0.9em" }}>Upload (Out):</span>
+                    <strong style={{ fontSize: "1.1em" }}>
+                      {diagnostics.bpsOutgoing !== undefined ? `${Math.round(diagnostics.bpsOutgoing / 1000)} kbps` : "Calculating..."}
+                    </strong>
+                  </div>
+                  <div style={{ gridColumn: "span 2" }}>
+                    <span style={{ opacity: 0.6, display: "block", fontSize: "0.9em" }}>Audio/Video Codec:</span>
+                    <strong style={{ fontSize: "1.1em", textTransform: "uppercase" }}>{diagnostics.codec || "opus"}</strong>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
