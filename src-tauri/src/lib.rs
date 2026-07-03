@@ -64,6 +64,18 @@ pub fn run() {
                 }
             });
 
+            // 2. general-purpose P2P Event Relay (relays typing, read receipts, and WebRTC SDP offers/answers)
+            let app_handle_relay = app.handle().clone();
+            app.listen_any("p2p-relay-event", move |event| {
+                let payload_str = event.payload();
+                let app_clone = app_handle_relay.clone();
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(payload_str) {
+                    if let Some(event_name) = data["eventName"].as_str() {
+                        let _ = app_clone.emit(event_name, &data["payload"]);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

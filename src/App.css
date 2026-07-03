@@ -445,6 +445,7 @@ body, html {
   flex-direction: column;
   align-items: center;
   width: 100%;
+  position: relative;
 }
 .profile-avatar {
   width: 44px;
@@ -462,6 +463,44 @@ body, html {
 }
 .profile-details {
   display: none; /* Hidden on sidebar for visual compactness */
+}
+
+/* Network Status badge styling */
+.network-status-badge {
+  position: absolute;
+  bottom: 0px;
+  right: 0px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(13, 14, 21, 0.95);
+  z-index: 10;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
+}
+.network-status-badge.connected {
+  background-color: #27c93f;
+  box-shadow: 0 0 6px rgba(39, 201, 63, 0.6);
+  animation: pulse-green 2s infinite;
+}
+.network-status-badge.connecting {
+  background-color: #ffbd2e;
+  box-shadow: 0 0 6px rgba(255, 189, 46, 0.6);
+  animation: pulse-amber 2s infinite;
+}
+.network-status-badge.disconnected {
+  background-color: #ff5f56;
+  box-shadow: 0 0 6px rgba(255, 95, 86, 0.6);
+}
+
+@keyframes pulse-green {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(39, 201, 63, 0.4); }
+  70% { transform: scale(1.18); box-shadow: 0 0 0 6px rgba(39, 201, 63, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(39, 201, 63, 0); }
+}
+@keyframes pulse-amber {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 189, 46, 0.4); }
+  70% { transform: scale(1.18); box-shadow: 0 0 0 6px rgba(255, 189, 46, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 189, 46, 0); }
 }
 
 /* 5. ChatList Panel Styles */
@@ -2981,4 +3020,82 @@ body, html {
   position: relative;
   z-index: 2; /* sits on top of action buttons */
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ==========================================
+   6. Image & File Lightbox Styling
+   ========================================== */
+.image-lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(10, 10, 15, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.lightbox-card {
+  width: 100%;
+  max-width: 900px;
+  background: rgba(25, 25, 35, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.5);
+  border-radius: 20px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.lightbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.lightbox-title {
+  font-size: 0.95em;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.lightbox-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lightbox-controls .control-btn {
+  width: 32px;
+  height: 32px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+  padding: 0;
+}
+.lightbox-controls .control-btn:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+.lightbox-controls .close-btn {
+  background: rgba(255, 95, 86, 0.15);
+  border-color: rgba(255, 95, 86, 0.25);
+  color: #ff5f56;
+}
+.lightbox-controls .close-btn:hover {
+  background: rgba(255, 95, 86, 0.3);
+  color: #ff5f56;
+}
+.lightbox-body {
+  padding: 24px;
+  background-color: rgba(5, 5, 10, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }

@@ -13,7 +13,11 @@ import {
   ArrowLeft,
   FileText,
   X,
-  Network
+  Network,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Download
 } from "lucide-react";
 import { Chat } from "../types";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -22,13 +26,46 @@ interface ChatAreaProps {
   chat: Chat | null;
   onSendMessage: (text: string, attachment?: { type: "image" | "file"; name: string; base64?: string }) => void;
   onBackToList?: () => void;
+  onTyping: (isTyping: boolean) => void;
 }
 
-export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackToList }) => {
+export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackToList, onTyping }) => {
   const [inputText, setInputText] = useState("");
   const [showDetails, setShowDetails] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{ name: string; type: "image" | "file"; base64?: string } | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [zoomScale, setZoomScale] = useState(1);
+
+  const typingTimeoutRef = useRef<any>(null);
+  const isCurrentlyTypingRef = useRef<boolean>(false);
+
+  // Clean up typing timers on component unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleTextChange = (text: string) => {
+    setInputText(text);
+
+    if (!isCurrentlyTypingRef.current) {
+      isCurrentlyTypingRef.current = true;
+      onTyping(true);
+    }
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      isCurrentlyTypingRef.current = false;
+      onTyping(false);
+    }, 1500);
+  };
 
   const getAttachmentUrl = (url?: string) => {
     if (!url) return "";
@@ -202,7 +239,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
                     {msg.attachment && (
                       <div className="message-attachment glass-element">
                         {msg.attachment.type === "image" ? (
-                          <div className="attachment-image-wrapper">
+                          <div
+                            className="attachment-image-wrapper"
+                            style={{ cursor: "zoom-in" }}
+                            onClick={() => {
+                              setLightboxUrl(getAttachmentUrl(msg.attachment!.url) || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=60");
+                              setZoomScale(1);
+                            }}
+                          >
                             <img
                               src={getAttachmentUrl(msg.attachment.url) || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=60"}
                               alt={msg.attachment.name}
@@ -333,7 +377,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
               type="text"
               placeholder={chat.isBlocked ? "🔒 Unblock peer to send messages..." : "Write a message..."}
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => handleTextChange(e.target.value)}
               className="message-input"
               disabled={chat.isBlocked}
             />
@@ -367,6 +411,73 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ chat, onSendMessage, onBackT
           </div>
         )}
       </footer>
+
+      {/* Interactive Lightbox Overlay */}
+      {lightboxUrl && (
+        <div className="image-lightbox-overlay glass-panel animate-fade-in" onClick={() => setLightboxUrl(null)}>
+          <div className="lightbox-card glass-element animate-scale-up" onClick={(e) => e.stopPropagation()}>
+            <div className="lightbox-header">
+              <span className="lightbox-title">Image Attachment Viewport</span>
+              <div className="lightbox-controls">
+                <button
+                  onClick={() => setZoomScale((prev) => Math.min(prev + 0.25, 3))}
+                  className="glass-button-round control-btn"
+                  title="Zoom In"
+                >
+                  <ZoomIn size={16} />
+                </button>
+                <button
+                  onClick={() => setZoomScale((prev) => Math.max(prev - 0.25, 0.5))}
+                  className="glass-button-round control-btn"
+                  title="Zoom Out"
+                >
+                  <ZoomOut size={16} />
+                </button>
+                <button
+                  onClick={() => setZoomScale(1)}
+                  className="glass-button-round control-btn"
+                  title="Reset Zoom"
+                >
+                  <Maximize2 size={16} />
+                </button>
+                <a
+                  href={lightboxUrl}
+                  download="attachment-image"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="glass-button-round control-btn"
+                  title="Open/Download"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+                >
+                  <Download size={16} />
+                </a>
+                <button
+                  onClick={() => setLightboxUrl(null)}
+                  className="glass-button-round control-btn close-btn"
+                  title="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            <div className="lightbox-body" style={{ overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", maxHeight: "70vh" }}>
+              <img
+                src={lightboxUrl}
+                alt="Lightbox Preview"
+                style={{
+                  transform: `scale(${zoomScale})`,
+                  transition: "transform 0.2s ease-out",
+                  maxWidth: "95%",
+                  maxHeight: "65vh",
+                  objectFit: "contain",
+                  borderRadius: "8px",
+                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3)"
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

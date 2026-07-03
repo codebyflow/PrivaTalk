@@ -7,7 +7,7 @@ import { CallsView } from "./components/CallsView";
 import { SettingsView, AppSettings } from "./components/SettingsView";
 import { mockChats as initialChats, mockContacts as initialContacts, mockCalls as initialCalls } from "./mockData";
 import { Chat, Message, Contact, Call } from "./types";
-import { Video, PhoneOff, Mic, MicOff, VideoOff, Volume2, Shield, X, Copy, Check } from "lucide-react";
+import { Video, PhoneOff, Phone, Mic, MicOff, VideoOff, Volume2, Shield, X, Copy, Check } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
@@ -24,10 +24,12 @@ function App() {
   const [mobileView, setMobileView] = useState<"list" | "chat">("list");
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [copiedProfileId, setCopiedProfileId] = useState(false);
+  const [networkStatus, setNetworkStatus] = useState<"connected" | "connecting" | "disconnected">("connecting");
 
   // WebRTC Stream refs and states
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
@@ -55,6 +57,9 @@ function App() {
     avatarColor: string;
     type: "audio" | "video";
     status: "ringing" | "connected";
+    direction?: "incoming" | "outgoing";
+    sdpOffer?: any;
+    chatId?: string;
   } | null>(null);
 
   const [callTimer, setCallTimer] = useState(0);
@@ -97,9 +102,23 @@ function App() {
         setCalls(dbCalls);
       } catch (err) {
         console.warn("Could not bootstrap database:", err);
+        setNetworkStatus("disconnected");
       }
     };
     bootstrapFromDb();
+
+    // Simulate libp2p bootstrap search delay
+    const timer = setTimeout(() => {
+      setNetworkStatus("connected");
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Request notification permissions
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
   }, []);
 
   // Listen for real-time incoming libp2p Gossipsub/KadDHT swarm events
@@ -127,6 +146,17 @@ function App() {
               })
             );
             
+            // Trigger native OS push notification
+            if (
+              "Notification" in window &&
+              Notification.permission === "granted" &&
+              (!document.hasFocus() || chatId !== selectedChatId)
+            ) {
+              new Notification(`New message from ${message.senderName}`, {
+                body: message.text,
+              });
+            }
+
             // Save incoming message in SQLite database
             invoke("send_db_message", { chatId, message }).catch(console.error);
           }
@@ -144,6 +174,143 @@ function App() {
     };
   }, [selectedChatId]);
 
+  // Listen for real-time WebRTC typing alerts, read receipts, and calling signals
+  useEffect(() => {
+    let unlistenTyping: (() => void) | null = null;
+    let unlistenRead: (() => void) | null = null;
+    let unlistenOffer: (() => void) | null = null;
+    let unlistenAnswer: (() => void) | null = null;
+    let unlistenCandidate: (() => void) | null = null;
+
+    const setupListeners = async () => {
+      try {
+        unlistenTyping = await listen<{ chatId: string; isTyping: boolean }>(
+          "webrtc-typing",
+          (event) => {
+            const { chatId, isTyping } = event.payload;
+            setChats((prevChats) =>
+              prevChats.map((chat) => {
+                if (chat.id === chatId) {
+                  return {
+                    ...chat,
+                    status: isTyping ? "typing..." : "online",
+                  };
+                }
+                return chat;
+              })
+            );
+          }
+        );
+
+        unlistenRead = await listen<{ chatId: string; messageId: string }>(
+          "webrtc-read-receipt",
+          (event) => {
+            const { chatId, messageId } = event.payload;
+            setChats((prevChats) =>
+              prevChats.map((chat) => {
+                if (chat.id === chatId) {
+                  return {
+                    ...chat,
+                    messages: chat.messages.map((m) =>
+                      m.id === messageId ? { ...m, status: "read" } : m
+                    ),
+                  };
+                }
+                return chat;
+              })
+            );
+          }
+        );
+
+        unlistenOffer = await listen<{ offer: any; chatId: string; name: string; type: "audio" | "video"; from: string }>(
+          "webrtc-offer",
+          (event) => {
+            const payload = event.payload;
+            if (payload.from !== myPeerId && !activeCall) {
+              setActiveCall({
+                name: payload.name,
+                avatar: payload.name.charAt(0),
+                avatarColor: "linear-gradient(135deg, #007aff 0%, #0056b3 100%)",
+                type: payload.type,
+                status: "ringing",
+                direction: "incoming",
+                sdpOffer: payload.offer,
+                chatId: payload.chatId
+              });
+            }
+          }
+        );
+
+        unlistenAnswer = await listen<{ answer: any; chatId: string }>(
+          "webrtc-answer",
+          async (event) => {
+            const { answer } = event.payload;
+            if (pcRef.current) {
+              try {
+                await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+                setActiveCall((prev) => prev ? { ...prev, status: "connected" } : null);
+              } catch (err) {
+                console.warn("Failed to set remote answer:", err);
+              }
+            }
+          }
+        );
+
+        unlistenCandidate = await listen<{ candidate: any; from: string }>(
+          "webrtc-ice-candidate",
+          async (event) => {
+            const { candidate, from } = event.payload;
+            if (from !== myPeerId && pcRef.current) {
+              try {
+                await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+              } catch (err) {
+                console.warn("Failed to add ice candidate:", err);
+              }
+            }
+          }
+        );
+      } catch (err) {
+        console.error("Failed to setup WebRTC sign sync listeners:", err);
+      }
+    };
+
+    setupListeners();
+
+    return () => {
+      if (unlistenTyping) unlistenTyping();
+      if (unlistenRead) unlistenRead();
+      if (unlistenOffer) unlistenOffer();
+      if (unlistenAnswer) unlistenAnswer();
+      if (unlistenCandidate) unlistenCandidate();
+    };
+  }, [activeCall, myPeerId]);
+
+  // Auto read incoming messages and send read receipt events to peer
+  useEffect(() => {
+    if (selectedChatId) {
+      const activeChat = chats.find((c) => c.id === selectedChatId);
+      if (activeChat) {
+        activeChat.messages.forEach((msg) => {
+          if (!msg.isSender && msg.status !== "read") {
+            emit("p2p-relay-event", {
+              eventName: "webrtc-read-receipt",
+              payload: { chatId: selectedChatId, messageId: msg.id }
+            }).catch(console.error);
+          }
+        });
+      }
+    }
+  }, [selectedChatId, chats]);
+
+  // Handle local typing alerts emission
+  const handleLocalTyping = (isTyping: boolean) => {
+    if (!selectedChatId) return;
+    emit("p2p-relay-event", {
+      eventName: "webrtc-typing",
+      payload: { chatId: selectedChatId, isTyping }
+    }).catch(console.error);
+  };
+
   const handleUpdateSettings = async (newSettings: Partial<AppSettings>) => {
     const nextSettings = { ...settings, ...newSettings };
     setSettings(nextSettings);
@@ -154,13 +321,32 @@ function App() {
     }
   };
 
-  // WebRTC Media Stream Handler
+  // WebRTC Media Stream Handler for outgoing calls
   useEffect(() => {
-    let activePC1: RTCPeerConnection | null = null;
-    let activePC2: RTCPeerConnection | null = null;
-
     const startWebRTCCall = async () => {
-      if (!activeCall) return;
+      if (!activeCall || activeCall.direction !== "outgoing") return;
+      
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
+      pcRef.current = pc;
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          emit("p2p-relay-event", {
+            eventName: "webrtc-ice-candidate",
+            payload: { candidate: e.candidate, from: myPeerId }
+          }).catch(console.error);
+        }
+      };
+
+      pc.ontrack = (e) => {
+        setRemoteStream(e.streams[0]);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = e.streams[0];
+        }
+      };
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -175,36 +361,47 @@ function App() {
           }
         }, 100);
 
-        if (activeCall.type === "video") {
-          // Perform a local loopback RTCPeerConnection exchange
-          const pc1 = new RTCPeerConnection();
-          const pc2 = new RTCPeerConnection();
-          activePC1 = pc1;
-          activePC2 = pc2;
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-          pc1.onicecandidate = (e) => {
-            if (e.candidate) pc2.addIceCandidate(e.candidate).catch(console.warn);
-          };
-          pc2.onicecandidate = (e) => {
-            if (e.candidate) pc1.addIceCandidate(e.candidate).catch(console.warn);
-          };
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
 
-          pc2.ontrack = (e) => {
-            setRemoteStream(e.streams[0]);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = e.streams[0];
-            }
-          };
+        emit("p2p-relay-event", {
+          eventName: "webrtc-offer",
+          payload: {
+            offer,
+            chatId: activeCall.chatId,
+            name: settings.profileName,
+            type: activeCall.type,
+            from: myPeerId
+          }
+        }).catch(console.error);
 
-          stream.getTracks().forEach((track) => pc1.addTrack(track, stream));
+        // Simulated Peer Echo Loopback (For offline node calling cards testing)
+        if (activeCall.name.startsWith("Node [")) {
+          setTimeout(async () => {
+            const mockPC = new RTCPeerConnection();
+            stream.getTracks().forEach((t) => mockPC.addTrack(t, stream));
+            mockPC.onicecandidate = (e) => {
+              if (e.candidate && pcRef.current) {
+                pcRef.current.addIceCandidate(new RTCIceCandidate(e.candidate)).catch(console.warn);
+              }
+            };
+            mockPC.ontrack = (e) => {
+              setRemoteStream(e.streams[0]);
+              if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = e.streams[0];
+              }
+            };
+            await mockPC.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await mockPC.createAnswer();
+            await mockPC.setLocalDescription(answer);
 
-          const offer = await pc1.createOffer();
-          await pc1.setLocalDescription(offer);
-          await pc2.setRemoteDescription(offer);
-
-          const answer = await pc2.createAnswer();
-          await pc2.setLocalDescription(answer);
-          await pc1.setRemoteDescription(answer);
+            emit("p2p-relay-event", {
+              eventName: "webrtc-answer",
+              payload: { answer, chatId: activeCall.chatId }
+            }).catch(console.error);
+          }, 1500);
         }
       } catch (err) {
         console.warn("Unable to capture media streams:", err);
@@ -212,7 +409,9 @@ function App() {
     };
 
     if (activeCall) {
-      startWebRTCCall();
+      if (activeCall.direction === "outgoing") {
+        startWebRTCCall();
+      }
     } else {
       // Cleanup streams
       if (localStream) {
@@ -223,13 +422,12 @@ function App() {
         remoteStream.getTracks().forEach((track) => track.stop());
         setRemoteStream(null);
       }
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
     }
-
-    return () => {
-      if (activePC1) activePC1.close();
-      if (activePC2) activePC2.close();
-    };
-  }, [activeCall?.status]);
+  }, [activeCall?.chatId]);
 
   // Toggle audio muted tracks
   useEffect(() => {
@@ -553,14 +751,12 @@ function App() {
       avatarColor: activeObj?.avatarColor || "linear-gradient(135deg, #8E2DE2 0%, #4A00E0 100%)",
       type,
       status: "ringing",
+      direction: "outgoing",
+      chatId: selectedChatId || `chat-${Date.now()}`
     });
 
-    // Simulate answer after 2.5 seconds
-    setTimeout(() => {
-      setActiveCall((prev) => (prev ? { ...prev, status: "connected" } : null));
-      setCalls((prev) => [newCall, ...prev]);
-      invoke("add_call_log", { call: newCall }).catch(console.error);
-    }, 2500);
+    setCalls((prev) => [newCall, ...prev]);
+    invoke("add_call_log", { call: newCall }).catch(console.error);
   };
 
   const handlePinChat = async (chatId: string) => {
@@ -736,6 +932,61 @@ function App() {
     }
   };
 
+  const handleAcceptCall = async () => {
+    if (!activeCall || !activeCall.sdpOffer) return;
+
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+    pcRef.current = pc;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        emit("p2p-relay-event", {
+          eventName: "webrtc-ice-candidate",
+          payload: { candidate: e.candidate, from: myPeerId }
+        }).catch(console.error);
+      }
+    };
+
+    pc.ontrack = (e) => {
+      setRemoteStream(e.streams[0]);
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = e.streams[0];
+      }
+    };
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: activeCall.type === "video",
+      });
+      setLocalStream(stream);
+
+      // Mount local video preview immediately
+      setTimeout(() => {
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+      }, 100);
+
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      await pc.setRemoteDescription(new RTCSessionDescription(activeCall.sdpOffer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      emit("p2p-relay-event", {
+        eventName: "webrtc-answer",
+        payload: { answer, chatId: activeCall.chatId }
+      }).catch(console.error);
+
+      setActiveCall((prev) => prev ? { ...prev, status: "connected" } : null);
+    } catch (err) {
+      console.warn("Accept call stream error:", err);
+    }
+  };
+
   const handleEndCall = () => {
     if (activeCall && callTimer > 0) {
       // Update duration of the last call in the list
@@ -753,6 +1004,12 @@ function App() {
       );
     }
     
+    // Close PeerConnection
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+
     // Stop tracks
     if (localStream) {
       localStream.getTracks().forEach((track) => track.stop());
@@ -780,16 +1037,17 @@ function App() {
         <div className="app-main-layout-row">
           {/* Navigation Sidebar */}
           <Sidebar
-          activeTab={activeTab}
-          setActiveTab={(tab) => {
-            setActiveTab(tab);
-            if (tab === "chats") setMobileView("list");
-          }}
-          theme={theme}
-          toggleTheme={toggleTheme}
-          onProfileClick={() => setShowProfileModal(true)}
-          profileAvatar={settings.profileAvatar}
-        />
+            activeTab={activeTab}
+            setActiveTab={(tab) => {
+              setActiveTab(tab);
+              if (tab === "chats") setMobileView("list");
+            }}
+            theme={theme}
+            toggleTheme={toggleTheme}
+            onProfileClick={() => setShowProfileModal(true)}
+            profileAvatar={settings.profileAvatar}
+            networkStatus={networkStatus}
+          />
 
         {/* Dynamic Inner Layout */}
         <div className="app-content-container">
@@ -817,6 +1075,7 @@ function App() {
                 chat={currentChat}
                 onSendMessage={handleSendMessage}
                 onBackToList={() => setMobileView("list")}
+                onTyping={handleLocalTyping}
               />
             </div>
           )}
@@ -904,35 +1163,57 @@ function App() {
             )}
 
             <div className="call-controls">
-              <button
-                onClick={() => setIsMuted(!isMuted)}
-                className={`call-ctrl-btn glass-button-round ${isMuted ? "disabled" : ""}`}
-                title={isMuted ? "Unmute Mic" : "Mute Mic"}
-              >
-                {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
-              </button>
+              {activeCall.status === "ringing" && activeCall.direction === "incoming" ? (
+                <>
+                  <button
+                    onClick={handleAcceptCall}
+                    className="call-ctrl-btn accept-call-btn glass-button-round"
+                    title="Accept Call"
+                    style={{ background: "#27c93f", color: "white" }}
+                  >
+                    <Phone size={20} />
+                  </button>
+                  <button
+                    onClick={handleEndCall}
+                    className="call-ctrl-btn end-call-btn glass-button-round"
+                    title="Decline Call"
+                  >
+                    <PhoneOff size={20} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setIsMuted(!isMuted)}
+                    className={`call-ctrl-btn glass-button-round ${isMuted ? "disabled" : ""}`}
+                    title={isMuted ? "Unmute Mic" : "Mute Mic"}
+                  >
+                    {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                  </button>
 
-              {activeCall.type === "video" && (
-                <button
-                  onClick={() => setIsCamOff(!isCamOff)}
-                  className={`call-ctrl-btn glass-button-round ${isCamOff ? "disabled" : ""}`}
-                  title={isCamOff ? "Turn Cam On" : "Turn Cam Off"}
-                >
-                  {isCamOff ? <VideoOff size={20} /> : <Video size={20} />}
-                </button>
+                  {activeCall.type === "video" && (
+                    <button
+                      onClick={() => setIsCamOff(!isCamOff)}
+                      className={`call-ctrl-btn glass-button-round ${isCamOff ? "disabled" : ""}`}
+                      title={isCamOff ? "Turn Cam On" : "Turn Cam Off"}
+                    >
+                      {isCamOff ? <VideoOff size={20} /> : <Video size={20} />}
+                    </button>
+                  )}
+
+                  <button className="call-ctrl-btn glass-button-round" title="Speaker toggle">
+                    <Volume2 size={20} />
+                  </button>
+
+                  <button
+                    onClick={handleEndCall}
+                    className="call-ctrl-btn end-call-btn glass-button-round"
+                    title="Hang Up"
+                  >
+                    <PhoneOff size={20} />
+                  </button>
+                </>
               )}
-
-              <button className="call-ctrl-btn glass-button-round" title="Speaker toggle">
-                <Volume2 size={20} />
-              </button>
-
-              <button
-                onClick={handleEndCall}
-                className="call-ctrl-btn end-call-btn glass-button-round"
-                title="Hang Up"
-              >
-                <PhoneOff size={20} />
-              </button>
             </div>
           </div>
         </div>

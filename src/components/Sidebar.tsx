@@ -8,6 +8,7 @@ interface SidebarProps {
   toggleTheme: () => void;
   onProfileClick: () => void;
   profileAvatar?: string;
+  networkStatus: "connected" | "connecting" | "disconnected";
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -17,6 +18,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   toggleTheme,
   onProfileClick,
   profileAvatar,
+  networkStatus,
 }) => {
 
   return (
@@ -80,10 +82,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
         </button>
 
-        <div className="sidebar-profile" onClick={onProfileClick} title="View Profile & QR-Code" style={{ cursor: "pointer" }}>
+        <div className="sidebar-profile" onClick={onProfileClick} title={`View Profile & QR-Code (${networkStatus})`} style={{ cursor: "pointer", position: "relative" }}>
           <div className="profile-avatar">
             {profileAvatar ? <img src={profileAvatar} className="sidebar-avatar-img" alt="Profile" /> : "ME"}
           </div>
+          <span className={`network-status-badge ${networkStatus}`} />
         </div>
       </div>
     </aside>
