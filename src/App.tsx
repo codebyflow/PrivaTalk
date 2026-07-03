@@ -847,7 +847,7 @@ function App() {
       </div>
     </div>
 
-      {/* Calling Screen Modal (Liquid Glass Panel) */}
+      {/* Calling Screen Modal (Glass Panel) */}
       {activeCall && (
         <div className="call-modal-overlay glass-panel animate-fade-in">
           <div className="call-card glass-element animate-scale-up">
@@ -938,7 +938,7 @@ function App() {
         </div>
       )}
 
-      {/* Profile Modal (Liquid Glass Overlay) */}
+      {/* Profile Modal (Glass Overlay) */}
       {showProfileModal && (
         <div className="profile-modal-overlay glass-panel animate-fade-in" onClick={() => setShowProfileModal(false)}>
           <div className="profile-modal-card glass-element animate-scale-up" onClick={(e) => e.stopPropagation()}>

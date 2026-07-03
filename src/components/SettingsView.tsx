@@ -37,7 +37,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [activeSubTab, setActiveSubTab] = useState<"profile" | "appearance" | "p2p" | "security">("profile");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
 
-  // Set CSS variables dynamically on setting change to update liquid glass parameters in real-time!
+  // Set CSS variables dynamically on setting change to update glass parameters in real-time!
   useEffect(() => {
     document.documentElement.style.setProperty("--glass-opacity", `${settings.glassOpacity}`);
     document.documentElement.style.setProperty("--glass-blur", `${settings.glassBlur}px`);
@@ -173,7 +173,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         {activeSubTab === "appearance" && (
           <div className="settings-section animate-fade-in">
             <h2>Appearance & Effects</h2>
-            <p className="section-description">Customize the liquid glass transparency and backdrops of the interface.</p>
+            <p className="section-description">Customize the glass transparency and backdrops of the interface.</p>
 
             <div className="settings-card glass-element">
               <h4>Glass Tuning</h4>
